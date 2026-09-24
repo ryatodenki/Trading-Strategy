@@ -1,0 +1,229 @@
+# =============================================================================
+# mnqbt default configuration.  Every rule parameter lives here.
+# All clock times are America/New_York (ET) wall-clock; DST is handled by
+# converting timestamps with zoneinfo, so "09:30" is always the cash open.
+#
+# Distances written as {points: X, atr_frac: Y} resolve to
+#     max(X, Y * daily_ATR)
+# so a rule keeps the same meaning when NQ is at 2,000 (2010) or 25,000 (2025).
+# Set atr_frac to 0 to use fixed points only.
+# =============================================================================
+
+project:
+  timezone: America/New_York
+  data_dir: datastore          # git-ignored; raw + processed market data
+  scratch_dir: reports_out     # git-ignored; ad-hoc output
+  results_dir: results         # committed, curated reports
+
+# -----------------------------------------------------------------------------
+# Instruments
+# -----------------------------------------------------------------------------
+instruments:
+  traded: MNQ                  # what we simulate trading
+  pair: MES                    # SMT partner
+  tick_size: 0.25
+  point_value: 2.0             # MNQ: $2 per index point ($0.50 per tick)
+  # Before the micros existed (launched 2019-05-06) we use the full-size
+  # contract as a price proxy.  Prices are identical tick-for-tick (arbitrage);
+  # P&L is still computed at MNQ's $2/point and MNQ costs.
+  proxies: {MNQ: NQ, MES: ES}
+  splice_date: "2019-07-01"    # trading date from which MNQ/MES replace NQ/ES
+
+# -----------------------------------------------------------------------------
+# Continuous contract construction
+# -----------------------------------------------------------------------------
+continuous:
+  # calendar: roll N calendar days before the 3rd-Friday expiry (CME's
+  #           equity-index roll convention is 8 days = the Thursday of the week
+  #           before expiry).  Same date for MNQ and MES by construction.
+  # volume:   roll the session after the next contract's daily volume exceeds
+  #           the front's (uses the previous day only -> no lookahead); the
+  #           traded instrument's roll dates are then forced onto the pair.
+  roll_rule: calendar
+  roll_days_before_expiry: 8
+  # additive = back-adjusted by the price gap at each roll.  Preserves every
+  # point distance inside and across rolls, so FVG sizes, stops, prior-day
+  # levels and P&L in points are exact.  Absolute prices far in the past are
+  # shifted (irrelevant here: no rule uses round numbers or % returns).
+  # none = raw front-month prices; prior-day levels would be wrong by the
+  # roll gap (~100-250 NQ points lately) on the day after every roll.
+  adjustment: additive
+
+# -----------------------------------------------------------------------------
+# Sessions (ET).  A trading day runs 18:00 (previous calendar day) -> 17:00.
+# -----------------------------------------------------------------------------
+sessions:
+  trading_day_start: "18:00"
+  trading_day_end: "17:00"
+  definitions:                 # [start, end) ; asia wraps past midnight
+    asia:   ["18:00", "03:00"]
+    london: ["03:00", "09:30"]
+    ny:     ["09:30", "16:00"]
+  # A trading day with fewer 1m bars than this fraction of a normal day is a
+  # short/holiday session: flagged, never traded, and skipped when looking up
+  # "prior day" high/low/value area.
+  short_day_bar_fraction: 0.85
+
+# -----------------------------------------------------------------------------
+# Data validation
+# -----------------------------------------------------------------------------
+validation:
+  max_gap_minutes: 15          # report intraday holes longer than this
+  gap_day_exclude_minutes: 60  # exclude a day from trading if it has a hole this long
+  spike_mult: 15               # wick > 15x rolling median 1m range that reverts -> suspect tick
+  spike_lookback: 240
+  min_pair_coverage: 0.95      # warn if MES has bars for < 95% of MNQ minutes
+
+# -----------------------------------------------------------------------------
+# Data sources
+# -----------------------------------------------------------------------------
+databento:
+  dataset: GLBX.MDP3
+  schema: ohlcv-1m
+  api_key_env: DATABENTO_API_KEY
+  history_start: "2010-06-06"  # first GLBX.MDP3 date
+  # Hard budget in USD for any single download command.  The quote is printed
+  # first; nothing is requested if the quote exceeds this.  Stay under the
+  # $125 sign-up credit and the cost to you is $0.
+  max_cost_usd: 100
+
+# -----------------------------------------------------------------------------
+# Rule parameters (Step 1)
+# -----------------------------------------------------------------------------
+rules:
+  atr_days: 14                 # daily ATR (true range of the Globex day), prior days only
+
+  mood:
+    # Volatility regime, fixed for the whole trading day, from prior days only:
+    # ratio = mean(daily TR, last fast_days) / mean(daily TR, last slow_days)
+    vol_fast_days: 5
+    vol_slow_days: 20
+    calm_below: 0.80
+    volatile_above: 1.25
+    # Chop: Kaufman efficiency ratio of chop_timeframe closes over chop_lookback
+    # bars = |net move| / sum(|bar-to-bar moves|).  1 = straight line, ~0 = chop.
+    # (A random walk averages about 1/sqrt(lookback) ~= 0.20 for 24 bars.)
+    chop_method: er            # er | adx
+    chop_timeframe: 5min
+    chop_lookback: 24
+    er_choppy_below: 0.20
+    adx_choppy_below: 20
+    # What the mood FILTER allows (when enabled):
+    allowed_vol: [normal, volatile]
+    block_choppy: true
+
+  structure:
+    timeframe: 60min
+    swing_n: 2                 # a swing high needs 2 bars each side (confirmed 2 bars later)
+    break_on: close            # close | wick : what counts as breaking a swing
+
+  levels:
+    # Which level families exist. value_area is added automatically when
+    # value_area.mode == levels and the value_area piece is switched on.
+    use: [prior_day, current_day, sessions, swings]
+    swing_timeframe: 15min
+    swing_n: 2
+    swing_count: 3             # most recent confirmed swing highs / lows kept as levels
+    # near : the swing extreme is within `tolerance` of a level (either side)
+    # sweep: the swing extreme traded THROUGH a level by at least 1 tick and at most `tolerance`
+    mode: near
+    tolerance: {points: 3.0, atr_frac: 0.03}
+
+  fvg:
+    timeframe: 5min            # 5min | 15min
+    min_size: {points: 1.0, atr_frac: 0.01}
+    max_age_bars: 12           # FVG usable for this many bars of its timeframe
+
+  smt:
+    timeframe: 5min
+    swing_n: 2                 # swing points on both MNQ and MES
+    lookback_bars: 24          # previous swing must be within this many bars
+    min_separation_bars: 3     # ...and at least this far back
+    align_window_bars: 1       # "same swing" on the other index = within +-1 bar (<= swing_n)
+
+  vwap:
+    anchor: trading_day        # trading_day (18:00) | session (resets at asia/london/ny start)
+    mode: trend                # trend: long only above VWAP | discount: long only below
+
+  value_area:
+    source: prior_day          # prior_day (full Globex day) | prior_rth (09:30-16:00)
+    pct: 0.70
+    bucket: {points: 0.25, atr_frac: 0.005}   # profile bucket height
+    # levels:   VAH/VAL of the prior session join the key-level set
+    # location: long only when entry <= VA midpoint, short only when >= midpoint
+    mode: levels
+
+  news:
+    file: config/news_days.csv
+    kinds: [FOMC, NFP]         # add CPI etc. to the CSV and list them here
+    mode: day                  # day: no entries all day | window: +-window_minutes around release
+    window_minutes: 30
+
+# -----------------------------------------------------------------------------
+# Setup assembly (the thing that is backtested)
+# -----------------------------------------------------------------------------
+setup:
+  # Core conditions (Step 3 "remove one at a time" switches these off)
+  require:
+    key_level: true
+    smt: true
+    fvg: true
+  # Optional pieces (Step 3 "add one at a time" switches these on)
+  filters:
+    mood: false
+    structure: false
+    vwap: false
+    value_area: false
+    news: false
+
+  max_minutes_smt_to_fvg: 60   # FVG must be confirmed within this long after the SMT
+  entry:
+    fvg_fraction: 0.5          # 0 = near edge of the FVG, 0.5 = midpoint, 1 = far edge
+    max_wait_minutes: 60       # cancel the limit order if not filled within this
+    no_fvg_entry: market       # when require.fvg is off: market order at next bar open
+  stop:
+    mode: swing                # swing: beyond the swept swing extreme | fvg: beyond the far FVG edge
+    buffer: {points: 1.0, atr_frac: 0.01}
+    min_risk: {points: 2.0, atr_frac: 0.02}   # skip setups with a stop tighter than this
+    max_risk: {points: 1.0e9, atr_frac: 0.40} # ...or wider than this
+  target:
+    mode: r_multiple           # r_multiple | liquidity
+    r_multiple: 2.0
+    liquidity_min_r: 1.0       # nearest opposing level at least this many R away
+    liquidity_fallback: r_multiple   # r_multiple (keeps the same entries) | skip
+
+  sessions_allowed: [asia, london, ny]
+  no_entry_windows: [["15:30", "18:00"]]   # no NEW orders/fills in these ET windows
+  flatten_time: "15:55"        # any open position is closed at this ET time
+  skip_short_sessions: true
+  skip_gap_days: true
+
+# -----------------------------------------------------------------------------
+# Backtest engine (Step 2)
+# -----------------------------------------------------------------------------
+backtest:
+  fill_mode: through           # through: limit fills only if price trades 1+ tick beyond | touch
+  same_bar: stop_first         # stop_first (conservative) | target_first (optimistic bracket)
+  commission_per_side: 0.60    # $ per contract per side, commission + exchange/NFA fees
+  slippage_ticks_stop: 1       # on stop exits
+  slippage_ticks_market: 1     # on market entries/exits (flatten, no-FVG variant)
+  contracts: 1
+
+# -----------------------------------------------------------------------------
+# Research protocol (Steps 3-4)
+# -----------------------------------------------------------------------------
+research:
+  dev_end: "2022-12-31"        # build / tune / compare variants on data up to here
+  holdout_start: "2023-01-01"  # touched once, by `mnqbt holdout`, logged in results/<dataset>/holdout_log.jsonl
+  min_trades_warning: 100
+  bootstrap_reps: 5000
+  ci_level: 0.95
+  random_benchmark_reps: 300
+  walkforward_first_test_year: 2016
+  # Small, pre-declared tuning grid (Step 4).  Every combination is counted
+  # and reported.  2 x 3 x 2 = 12 combinations.
+  tuning_grid:
+    setup.entry.fvg_fraction: [0.5, 0.0]
+    setup.target.r_multiple: [1.5, 2.0, 3.0]
+    setup.max_minutes_smt_to_fvg: [30, 60]
+  tuning_objective: avg_r_net     # any key of reports.metrics.summarize

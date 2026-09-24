@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Market data never goes into git (licensing + size). See README "Data".
+datastore/
+*.dbn
+*.dbn.zst
+
+# Scratch output; curated reports live in reports/ and are committed on purpose.
+reports_out/

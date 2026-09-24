@@ -1,0 +1,36 @@
+# Step 3 variants.  Each entry is a set of dotted-key overrides applied on
+# top of config/default.yaml.  Nothing here is tuned: every variant uses the
+# default parameters, so the only thing that changes is the piece under test.
+
+# 1. Core: key level + 5m FVG + SMT, stop beyond the swept swing, 2R target.
+baseline: {}
+
+# 2. Add each piece alone to the baseline.
+add_one:
+  mood:             {setup.filters.mood: true}
+  structure:        {setup.filters.structure: true}
+  vwap:             {setup.filters.vwap: true}
+  value_area:       {setup.filters.value_area: true}
+  fvg_15m:          {rules.fvg.timeframe: 15min}
+  liquidity_target: {setup.target.mode: liquidity}
+
+# 3. Full setup = baseline + every filter; then remove one condition at a time.
+full:
+  setup.filters.mood: true
+  setup.filters.structure: true
+  setup.filters.vwap: true
+  setup.filters.value_area: true
+
+remove_one:             # applied on top of `full`
+  no_key_level:  {setup.require.key_level: false}
+  no_smt:        {setup.require.smt: false}
+  no_fvg:        {setup.require.fvg: false}
+  no_mood:       {setup.filters.mood: false}
+  no_structure:  {setup.filters.structure: false}
+  no_vwap:       {setup.filters.vwap: false}
+  no_value_area: {setup.filters.value_area: false}
+
+# Engine sensitivity (not strategy variants): how much do fill assumptions matter?
+engine_checks:
+  touch_fills:        {backtest.fill_mode: touch}
+  target_first:       {backtest.same_bar: target_first}
