@@ -180,6 +180,7 @@ results/           committed reports (synthetic demo now; real data later)
 ## Known limitations
 
 - The value area comes from 1m bars (volume spread evenly over each bar), not tick data. With Databento 1-second or trades data this can be upgraded.
+- This shit doesnt work
 - A stop and target inside the same 1m bar are resolved stop-first. The engine accepts a finer-data resolver (`resolver=`) if 1-second bars are downloaded for those minutes. The share of trades affected is shown in every table.
 - Queue position isn't modelled; the trade-through rule is the stand-in.
 - Inducement is not implemented (by request).
