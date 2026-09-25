@@ -81,6 +81,16 @@ def plot_g5_trade(ctx: Ctx, g: _G5Inputs, it: pd.Series, tr: pd.Series, gex: flo
                 ax.annotate(name, (x, price), textcoords="offset points", xytext=(0, 9 * y_off), ha="center",
                             va="bottom" if kind > 0 else "top", color=INK, fontsize=8)
 
+    # round 2: the swing that sets the stop (confirmed by the order; the swing bar is SWING_N bars before that)
+    if int(it.get("stop_ref_ns", it["placed_ns"])) != int(it["placed_ns"]):
+        kpos = int(np.searchsorted(b5["known_ns"].to_numpy(np.int64), int(it["stop_ref_ns"]))) - SWING_N
+        x = off(kpos)
+        if 0 <= x < len(A):
+            y = A["low"].iat[x] if d > 0 else A["high"].iat[x]
+            ax.scatter([x], [y], s=110, facecolor="none", edgecolor=RED, linewidth=1.6, zorder=6)
+            ax.annotate("stop swing", (x, y), textcoords="offset points", xytext=(-10, 0), ha="right", va="center",
+                        color=INK, fontsize=8)
+
     # the key level(s) the FVG's candles broke
     by_value: dict[float, list[str]] = {}
     for name, v in _level_values(ctx, g, it).items():
@@ -117,7 +127,7 @@ def plot_g5_trade(ctx: Ctx, g: _G5Inputs, it: pd.Series, tr: pd.Series, gex: flo
         ax.step(np.r_[off(xs_bars), xe], np.r_[stop_y, stop_y[-1]], where="post", color=RED, linewidth=1.6, zorder=5)
         tail(stop_y[-1], RED)
         margin.append((stop_y[-1], f" trailing stop {stop_y[-1]:,.2f}"))
-        ax.text(xs, it["stop"], f"initial stop {it['stop']:,.2f} ", color=INK2, fontsize=8, va="center", ha="right")
+        margin.append((it["stop"], f" initial stop {it['stop']:,.2f}"))
     else:
         ax.hlines(tr["stop"], xs, xe, color=RED, linewidth=1.6, zorder=5)
         tail(tr["stop"], RED)
@@ -153,7 +163,7 @@ def plot_g5_trade(ctx: Ctx, g: _G5Inputs, it: pd.Series, tr: pd.Series, gex: flo
     t_place = pd.Timestamp(int(tr["placed_ns"]), tz="UTC").tz_convert(get(cfg, "project.timezone"))
     t_fill = pd.Timestamp(int(tr["fill_ns"]), tz="UTC").tz_convert(get(cfg, "project.timezone"))
     sub = (f"5m candles, times ET · GEX the evening before: {gex / 1e9:+.2f}bn · {it['fvg_tf'].replace('min', '-minute')} FVG · "
-           f"reward:risk to the nearest key level {it['reward_risk']:.1f} · order {t_place:%H:%M}, filled {t_fill:%H:%M} · "
+           f"reward:risk to the nearest key level {it['reward_risk']:.2f} · order {t_place:%H:%M}, filled {t_fill:%H:%M} · "
            f"1R = 10% of ATR = {0.1 * tr['atr']:.1f} pts")
     fig.text(0.012, 0.985, title, color=INK, fontsize=11.5, va="top", ha="left")
     fig.text(0.012, 0.948, sub, color=INK2, fontsize=8.5, va="top", ha="left")

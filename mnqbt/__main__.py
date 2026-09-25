@@ -244,23 +244,26 @@ def cmd_gamma(args, cfg):
 
 
 def cmd_gamma_charts(args, cfg):
-    """Charts of G5 (your breakout setup) trades from the explore split only: per regime the best, the worst and
-    ``--random`` random trades (fixed seed), plus the cumulative result."""
+    """Charts of G5 (your breakout setup) trades: per gamma regime the best, the worst and ``--random`` random trades
+    (fixed seed), plus the cumulative result.  ``--round explore``: round 1 on the explore split (NQ prices);
+    ``--round mnq``: round 2 (swing stop) on MNQ 2019-07-01 .. 2022-12-30.  Nothing later is loaded."""
     from mnqbt.backtest.engine import simulate
     from mnqbt.data.gex import load_gex
     from mnqbt.reports.gamma_charts import plot_g5_equity, plot_g5_trade
     from mnqbt.strategies.explore import SPLITS
-    from mnqbt.strategies.gamma import BY_ID, _G5Inputs
+    from mnqbt.strategies.gamma import BY_ID, BY_ID_R2, _G5Inputs
     from mnqbt.strategies.gamma_run import gamma_dir, load_gamma_world
 
-    gw = load_gamma_world(cfg, args.dataset, "MNQ", "explore")
-    w, h = gw.w, BY_ID["G5"]
+    split = args.round
+    h = BY_ID["G5"] if split == "explore" else BY_ID_R2["G5"]
+    gw = load_gamma_world(cfg, args.dataset, "MNQ", split)
+    w = gw.w
     it = h.build(w.ctx, gw.regime)
     it = it[(it["tdate"] >= w.start) & (it["tdate"] <= w.end) & (it["flatten_ns"] <= w.mk.ts[-1])].reset_index(drop=True)
     tr = simulate(w.mk, it, w.st)[0]
     tr = tr[tr["regime"].notna()].reset_index(drop=True)
-    gex = load_gex(cfg, end=SPLITS["explore"][1])
-    out = gamma_dir(cfg, args.dataset) / "examples"
+    gex = load_gex(cfg, end=SPLITS[split][1])
+    out = gamma_dir(cfg, args.dataset) / ("examples" if split == "explore" else "examples_mnq")
     rng = np.random.default_rng(args.seed)
     picks = []
     for g in (1, -1):
@@ -279,19 +282,25 @@ def cmd_gamma_charts(args, cfg):
         rows.append(f"| [{f.name}]({f.name}) | {why} | {'positive' if t['regime'] > 0 else 'negative'} | {day.date()} | "
                     f"{'long' if t['dir'] > 0 else 'short'} | {it.loc[int(t['intent']), 'fvg_tf']} | {t['exit_reason']} | {t['r_net']:+.2f} |")
     first, last = (pd.Timestamp(x).date() for x in (tr["tdate"].min(), tr["tdate"].max()))
-    plot_g5_equity(tr, out / "g5_cumulative.png", f"G5, your breakout setup: all {len(tr)} explore trades "
-                   f"({first} → {last}), cumulative R")
-    readme = ["# G5 example trades (explore split only)", "",
-              "Your breakout setup as pre-registered in [GAMMA.md](../../../../GAMMA.md), on MNQ explore data (NQ prices, "
-              "back-adjusted, before MNQ existed). Validate and final-test dates are not loaded.", "",
+    what = "explore trades" if split == "explore" else "MNQ trades (round 2, swing stop)"
+    plot_g5_equity(tr, out / "g5_cumulative.png", f"G5, your breakout setup: all {len(tr)} {what}, {first} → {last}, cumulative R")
+    if split == "explore":
+        head = ["# G5 example trades (explore split only)", "",
+                "Your breakout setup as pre-registered in [GAMMA.md](../../../../GAMMA.md), on MNQ explore data (NQ prices, "
+                "back-adjusted, before MNQ existed). Validate and final-test dates are not loaded."]
+    else:
+        head = ["# G5 example trades, round 2 (MNQ, 2019-07-01 → 2022-12-30)", "",
+                "Your breakout setup with the round-2 stop (1% of ATR beyond the latest swing; GAMMA.md, Round 2), on MNQ's own "
+                "prices (back-adjusted for rolls). Nothing after 2022-12-30 is loaded; the final test stays locked."]
+    readme = head + ["",
               f"Chosen by rule, not by eye: for each gamma regime the best trade, the worst trade and {args.random} random "
-              f"trades (seed {args.seed}). Of all {len(tr)} explore trades, {int((tr['r_net'] > 0).sum())} made money after costs.",
+              f"trades (seed {args.seed}). Of all {len(tr)} trades, {int((tr['r_net'] > 0).sum())} made money after costs.",
               "", "![cumulative R](g5_cumulative.png)", "",
               "| chart | picked as | gamma | date | side | FVG | exit | R net |", "|---|---|---|---|---|---|---|---:|", *rows, "",
               "How to read a chart: violet triangles are the two latest 5m swing highs / lows when the FVG started (HH/HL "
               "for longs, LH/LL for shorts); the dashed violet line is the key level the FVG's candles broke; the shaded "
-              "band is the FVG; blue = limit entry (triangle = fill), red = stop (a step line when it trails), green = "
-              "target, orange = VWAP, X = exit.", ""]
+              "band is the FVG; blue = limit entry (triangle = fill), red = stop (a step line when it trails; a red ring "
+              "marks the swing that sets a round-2 stop), green = target, orange = VWAP, X = exit.", ""]
     (out / "README.md").write_text("\n".join(readme))
     print(f"{len(picks)} trade charts + cumulative chart -> {out}")
 
@@ -509,6 +518,8 @@ def main(argv=None):
 
     p = sub.add_parser("gamma-charts", help="charts of G5 (breakout setup) trades from the explore split")
     p.add_argument("--dataset", default="real")
+    p.add_argument("--round", choices=["explore", "mnq"], default="explore",
+                   help="explore: round 1 on 2010-2018 (NQ prices); mnq: round 2 (swing stop) on MNQ 2019-07 .. 2022-12")
     p.add_argument("--random", type=int, default=2, help="random trades per gamma regime, besides the best and worst")
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_gamma_charts)
