@@ -94,7 +94,8 @@ def _main_and_contrast(h: GammaHypothesis, gw: GammaWorld, cfg: dict) -> tuple[d
         in_a = np.r_[np.ones(len(t), bool), np.zeros(len(alt), bool)]
         days = np.r_[pd.DatetimeIndex(t["tdate"]).values, pd.DatetimeIndex(alt["tdate"]).values]
         what = "gamma-matched exits − swapped exits"
-        groups = [(f"{REGIME_NAME[g]} gamma", "regime", g) for g in (1, -1)] + [(f"{tf} FVG", "fvg_tf", tf) for tf in ("15min", "5min")]
+        groups = ([(f"{REGIME_NAME[g]} gamma", "regime", g) for g in (1, -1)] + [(f"{tf} FVG", "fvg_tf", tf) for tf in ("15min", "5min")]
+                  + [("FVG at the level", "at_level", True), ("FVG not at the level", "at_level", False)])
         extra = [{"hypothesis": h.id, "group": name, "trades": int((t[col] == v).sum()),
                   "avg_r_net": float(t.loc[t[col] == v, "r_net"].mean()) if (t[col] == v).any() else None,
                   "avg_r_net_swapped": float(alt.loc[alt[col] == v, "r_net"].mean()) if (alt[col] == v).any() else None}
@@ -245,7 +246,7 @@ def stage_report(res: GammaResult) -> str:
                  f"[{_f(r.get('ci_low'))}, {_f(r.get('ci_high'))}] | {_p(r['p'])} | {_p(r.get('p_adj'))} |")
     L.append("")
     if res.by_regime:
-        L += ["## G5 by regime and by FVG timeframe (description only)", "", "| group | trades | avg R net (gamma-matched exits) | "
+        L += ["## G5 by regime, FVG timeframe and FVG at the level (description only)", "", "| group | trades | avg R net (gamma-matched exits) | "
               "avg R net (swapped exits) |", "|---|---:|---:|---:|"]
         for r in res.by_regime:
             L.append(f"| {r['group']} | {r['trades']:,} | {_f(r['avg_r_net'])} | {_f(r['avg_r_net_swapped'])} |")

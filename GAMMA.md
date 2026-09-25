@@ -100,13 +100,15 @@ Each hypothesis has a market reason and a direction fixed in advance. There are 
 
 ### G5 — your breakout setup, exits chosen by gamma
 
-*Revised after your review of the first version, before any run. The first version is in commit `9a1697c`.*
+*Revised twice after your review, before any run. Earlier versions are in commits `9a1697c` and `27f7f93`.*
 
 Your rules:
-- Price breaks a key level in the direction of simple higher-high / higher-low structure, and the break leaves an FVG right at the level.
+- Price breaks a key level in the direction of simple higher-high / higher-low structure, and the breaking move leaves an FVG. An FVG right at the level is better, but not required.
 - Enter in that FVG. A 15-minute FVG is stronger and is used if there is one; otherwise a 5-minute one.
 - Stop a little beyond the FVG.
+- Take the trade only if reward:risk is more than 1:1.
 - Exit by the day's gamma.
+- Trade the London and NY sessions.
 
 The long side is described; shorts mirror it.
 
@@ -115,12 +117,12 @@ The long side is described; shorts mirror it.
    - the prior day's high and today's high so far;
    - the prior day's VAH and VAL (the harness's 70% value area of the prior full day);
    - VWAP (the harness's, anchored at the 18:00 start of the trading day).
-2. **Structure.** Uptrend: the latest two 5-minute swing highs are rising and the latest two swing lows are rising. These are the harness's swings, 2 bars each side, confirmed before the breakout candle starts.
-3. **Breakout FVG.** A bullish FVG on the 5-minute or the 15-minute chart whose gap contains a key level: candle 1's high ≤ level ≤ candle 3's low.
+2. **Structure.** Uptrend: the latest two 5-minute swing highs are rising and the latest two swing lows are rising. These are the harness's swings, 2 bars each side, confirmed before the FVG's first candle starts.
+3. **Breakout FVG.** A bullish FVG on the 5-minute or the 15-minute chart whose three candles carried price through a key level: candle 1 opened at or below the level, and candle 3 closed above it.
    - It uses the harness rule: 3 up candles, gap ≥ max(1 pt, 3% of ATR), all in one trading day.
-   - Price broke the level with a gap: candle 1 was entirely at or below the level, and candle 3 entirely above it.
-   - Levels are taken as known when candle 2, the breakout candle, starts. VWAP is taken at candle 1's close.
-   - Candle 3 must start between 03:00 and 15:00 ET.
+   - Levels are taken as known when candle 1 starts. VWAP is taken at the close of the bar before candle 1.
+   - **At the level** means the gap itself contains the level: candle 1's high ≤ level ≤ candle 3's low. It is better but not required, and it is reported separately.
+   - **Sessions:** London and NY. Candle 3 starts at or after 03:00 ET and closes before 15:30 ET.
 4. **Entry.** When candle 3 closes, place a limit buy at the FVG's midpoint.
    - There is no time limit. The order waits until it fills, and fills only when price trades 1 tick through.
    - It is cancelled only in these cases:
@@ -128,23 +130,31 @@ The long side is described; shorts mirror it.
      - a 15-minute setup replaces it (rule 5);
      - it reaches 15:30, the harness's last time for new entries.
 5. **15 minutes beats 5 minutes.**
-   - If a bullish 15-minute breakout FVG is confirmed while a 5-minute order is still waiting, the 5-minute order is cancelled and the 15-minute one placed.
+   - If a bullish 15-minute setup is confirmed while a 5-minute order is still waiting, the 5-minute order is cancelled and the 15-minute one placed. The 15-minute setup must pass every rule here, including rule 7.
    - If both are confirmed at the same moment, the 15-minute one is used.
 6. **Stop:** a buffer below the FVG's low edge (candle 1's high).
-   - The buffer is max(1 pt, 1% of ATR), the harness's `setup.stop.buffer`.
-   - The broken key level sits inside the FVG, so it is a second defence in front of the stop.
+   - The buffer is **1% of ATR**, your "2 pips".
    - The setup is skipped if the stop distance is outside [max(2 pt, 2% of ATR), 40% of ATR].
-7. **Exit, by the day's gamma:**
-   - **Positive gamma: fixed target and stop.**
-     - The target is the nearest key level at least 1× the stop distance above the entry. If there is none, it is 2× the stop distance.
-     - The key levels are as of the order: prior-day high, today's high so far, the latest Asia, London and NY session highs, the 3 latest 15-minute swing highs, the prior day's VAH and VAL, and VWAP.
+7. **Reward:risk more than 1:1.**
+   - The reward is the distance from the entry to the nearest key level beyond it, as of the order.
+   - The key levels here are:
+     - prior-day high and today's high so far;
+     - the latest Asia, London and NY session highs;
+     - the 3 latest 15-minute swing highs;
+     - the prior day's VAH and VAL;
+     - VWAP.
+   - If that reward is 1× the stop distance or less, **pass**: no trade.
+   - If no key level lies beyond the entry, the reward counts as 2× the stop distance.
+   - This applies on both gamma regimes, so the contrast compares the same entries.
+8. **Exit, by the day's gamma:**
+   - **Positive gamma: fixed target and stop.** The target is that nearest key level, or 2× the stop distance if there is none.
    - **Negative gamma: trailing stop, no target.**
      - Every 5-minute swing low confirmed after the fill moves the stop up to that swing low minus the buffer.
      - The stop never moves down.
    - **Both:** flat at 15:55 if still open. Everything here is day trading.
-8. **Positions.** One at a time. A setup while an order or position is live is skipped, except for the replacement in rule 5.
+9. **Positions.** One at a time. A setup while an order or position is live is skipped, except for the replacement in rule 5.
 
-**Description only, not tests:** G5's results split by FVG timeframe (5 vs 15 minutes).
+**Description only, not tests:** G5's results split by FVG timeframe (5 vs 15 minutes) and by FVG at the level vs not.
 
 ## Tests, the contrasts and the family
 
@@ -168,7 +178,7 @@ Each hypothesis has **two tests**. That makes **10 tests** in one Holm family.
 - **Random-entry benchmark:** for a main test that passes, the matched random-entry p is reported as a warning sign, on random days of the same regime. It is not a pass rule. It is not computed for G5, whose limit entries and trailing stops the benchmark does not replay.
 - **Description only, not tests:**
   - the number of positive-, negative- and no-regime days in each split;
-  - G5 split by regime and by FVG timeframe.
+  - G5 split by regime, by FVG timeframe and by FVG at the level vs not.
   - Fewer than 100 trades in a main test is flagged, not excluded.
 
 ## Pass rules, fixed now

@@ -1,5 +1,7 @@
 """GAMMA.md hypotheses: gamma timing, rule definitions, trailing stops, no lookahead, runner (synthetic data only)."""
 
+import copy
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,7 +18,7 @@ from mnqbt.rules.swings import swings
 from mnqbt.strategies.benchmark import random_benchmark
 from mnqbt.strategies.common import Ctx
 from mnqbt.strategies.explore import World, passed
-from mnqbt.strategies.gamma import BY_ID, HYPOTHESES, TARGET_LEVELS, breakout
+from mnqbt.strategies.gamma import BY_ID, HYPOTHESES, _G5Inputs, _setups, breakout
 from mnqbt.strategies.gamma_run import GammaWorld, _test_split, stage_report
 from mnqbt.strategies.patterns import BY_ID as H, R_ATR, _tod
 from mnqbt.strategies.run import dev_frames, run_each
@@ -154,45 +156,62 @@ def _g5_reference(ctx, regime, days) -> list[dict]:
         i = int(np.searchsorted(ts1, t, side="left")) - 1
         return vw[i] if i >= 0 and day1[i] == day else np.nan
 
+    def tod(t):
+        return _tod(ctx.et_minute(np.array([t])))[0]
+
     setups = []
     for tf, width in (("5min", 5), ("15min", 15)):
         bars = F.bars("a", tf)
         fv = detect_fvgs(bars, tf, resolve_dist(fc["min_size"], F.atr_for(cfg, bars)), 12, True)
         for _, z in fv[pd.DatetimeIndex(fv["tdate"]).isin(days)].iterrows():
             d, day = int(z["dir"]), pd.Timestamp(z["tdate"])
-            c2 = int(z["c1_start_ns"]) + width * NS_PER_MIN
-            c3_start = int(z["known_ns"]) - width * NS_PER_MIN
-            if not (_tod(180) <= _tod(ctx.et_minute(np.array([c3_start])))[0] < _tod(900)):
+            c1 = int(z["c1_start_ns"])
+            c3_start, c3_end = int(z["known_ns"]) - width * NS_PER_MIN, int(z["known_ns"])
+            if not (tod(c3_start) >= _tod(180) and tod(c3_end) < _tod(15 * 60 + 30)):       # London and NY
                 continue
             if not ctx.can_enter(pd.DatetimeIndex([day]))[0] or not np.isfinite(regime.get(day, np.nan)):
                 continue
-            hs = SW[1][SW[1]["known_ns"] <= c2]["price"].to_numpy()
-            ls = SW[-1][SW[-1]["known_ns"] <= c2]["price"].to_numpy()
+            hs = SW[1][SW[1]["known_ns"] <= c1]["price"].to_numpy()
+            ls = SW[-1][SW[-1]["known_ns"] <= c1]["price"].to_numpy()
             if len(hs) < 2 or len(ls) < 2:
                 continue
             up, down = hs[-1] > hs[-2] and ls[-1] > ls[-2], hs[-1] < hs[-2] and ls[-1] < ls[-2]
             if not (up if d > 0 else down):
                 continue
-            r = int(np.searchsorted(start5, c2))
-            if r >= len(start5) or start5[r] != c2:
+            r = int(np.searchsorted(start5, c1))
+            if r >= len(start5) or start5[r] != c1:
                 continue
             if d > 0:
                 levels = {"swing": hs[-1], "pdh": lv["pdh"].iat[r], "dh": lv["dh"].iat[r]}
             else:
                 levels = {"swing": ls[-1], "pdl": lv["pdl"].iat[r], "dl": lv["dl"].iat[r]}
-            levels.update(vah=lv["vah"].iat[r], val=lv["val"].iat[r], vwap=vwap_known_at(c2, day))
-            broken = [n for n, L in levels.items() if np.isfinite(L) and z["bottom"] <= L <= z["top"]]
+            levels.update(vah=lv["vah"].iat[r], val=lv["val"].iat[r], vwap=vwap_known_at(c1, day))
+            o1, cl3 = bars["open"].iat[int(z["c3_pos"]) - 2], bars["close"].iat[int(z["c3_pos"])]
+            broken = [n for n, L in levels.items() if np.isfinite(L) and d * o1 <= d * L < d * cl3]
             if not broken:
                 continue
             atr = ctx.atr_on(pd.DatetimeIndex([day]))[0]
             e = float(entry_price(np.array([z["top"]]), np.array([z["bottom"]]), np.array([d]), 0.5, tick)[0])
-            buf = float(resolve_dist(sc["buffer"], atr))
+            buf = 0.01 * atr
             stop = np.floor((z["bottom"] - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((z["top"] + buf) / tick - 1e-9) * tick
             risk = d * (e - stop)
             if not (risk > 0 and resolve_dist(sc["min_risk"], atr) <= risk <= resolve_dist(sc["max_risk"], atr)):
                 continue
-            setups.append({"placed_ns": int(z["known_ns"]), "dir": d, "fvg_tf": tf, "day": day, "entry": e, "stop": stop,
-                           "risk": risk, "buf": buf, "level": set(broken)})
+            t = int(z["known_ns"])
+            r_order = int(np.searchsorted(start5, t)) - 1
+            names = ["pdh", "dh", "asia_h", "london_h", "ny_h", "sh1", "sh2", "sh3", "vah", "val"] if d > 0 else \
+                    ["pdl", "dl", "asia_l", "london_l", "ny_l", "sl1", "sl2", "sl3", "vah", "val"]
+            lvls = np.r_[lv[names].iloc[r_order].to_numpy(float), vwap_known_at(t, day)]
+            beyond = lvls[np.isfinite(lvls) & (d * lvls > d * e)]
+            if len(beyond):
+                nearest = beyond.min() if d > 0 else beyond.max()
+                if d * (nearest - e) <= risk:                                               # R:R 1:1 or less: pass
+                    continue
+            else:
+                nearest = e + 2 * d * risk
+            at = any(np.isfinite(L) and z["bottom"] <= L <= z["top"] for L in levels.values())
+            setups.append({"placed_ns": t, "dir": d, "fvg_tf": tf, "day": day, "entry": e, "stop": stop, "risk": risk,
+                           "buf": buf, "level": set(broken), "at_level": at, "nearest": nearest})
     out = []
     for x in setups:
         t, d, day = x["placed_ns"], x["dir"], x["day"]
@@ -205,12 +224,7 @@ def _g5_reference(ctx, regime, days) -> list[dict]:
                 expire = later[0]
         row = {**x, "regime": int(g), "expire_ns": expire}
         if g > 0:
-            r = int(np.searchsorted(start5, t)) - 1
-            names = ["pdh", "dh", "asia_h", "london_h", "ny_h", "sh1", "sh2", "sh3", "vah", "val"] if d > 0 else \
-                    ["pdl", "dl", "asia_l", "london_l", "ny_l", "sl1", "sl2", "sl3", "vah", "val"]
-            lvls = np.r_[lv[names].iloc[r].to_numpy(float), vwap_known_at(t, day)]
-            beyond = lvls[np.isfinite(lvls) & (d * lvls > d * (x["entry"] + d * x["risk"]))]
-            raw = (beyond.min() if d > 0 else beyond.max()) if len(beyond) else x["entry"] + 2 * d * x["risk"]
+            raw = x["nearest"]
             row["target"] = np.ceil(raw / tick - 1e-9) * tick if d > 0 else np.floor(raw / tick + 1e-9) * tick
             row["trail_ns"] = []
         else:
@@ -232,7 +246,8 @@ def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime):
     assert len(ref) >= 40 and len(got) == len(ref)
     for r, (_, g) in zip(ref, got.iterrows()):
         assert (g["placed_ns"], g["dir"], g["fvg_tf"], g["regime"]) == (r["placed_ns"], r["dir"], r["fvg_tf"], r["regime"])
-        assert set(g["level"].split("+")) == r["level"]
+        assert set(g["level"].split("+")) == r["level"] and g["at_level"] == r["at_level"]
+        assert g["reward_risk"] > 1.0
         assert g["entry"] == pytest.approx(r["entry"]) and g["stop"] == pytest.approx(r["stop"])
         assert g["expire_ns"] == r["expire_ns"]
         assert (np.isnan(g["target"]) and np.isnan(r["target"])) or g["target"] == pytest.approx(r["target"])
@@ -242,6 +257,7 @@ def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime):
         assert g["exit_style"] == ("fixed" if r["regime"] > 0 else "trail") and g["entry_type"] == "limit"
     assert {"fixed", "trail"} <= set(got["exit_style"]) and {"5min", "15min"} <= set(got["fvg_tf"])
     assert (got["replaced_at"] > 0).any() and got["level"].str.contains("vwap|vah|val").any()
+    assert got["at_level"].any() and not got["at_level"].all()
 
 
 def test_g5_a_15_minute_setup_replaces_a_waiting_5_minute_order(ctx, regime):
@@ -255,6 +271,16 @@ def test_g5_a_15_minute_setup_replaces_a_waiting_5_minute_order(ctx, regime):
     same_time = it.groupby("placed_ns")["fvg_tf"].agg(list)
     for tfs in same_time[same_time.map(len) > 1]:
         assert tfs == sorted(tfs, key=lambda t: t != "15min")            # 15m first when both appear at once
+
+
+def test_g5_stop_buffer_is_one_percent_of_atr_even_when_that_is_under_a_point(ctx, regime):
+    small = copy.copy(ctx)
+    small.atr = ctx.atr * 0.2                                        # ATRs of ~20-60 points: 1% is under 1 point
+    st = pd.concat([_setups(small, _G5Inputs(small), tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)])
+    assert len(st) >= 5 and (0.01 * st["atr"] < 1.0).all()
+    far = np.where(st["dir"] > 0, st["fvg_bottom"], st["fvg_top"])
+    gap = st["dir"] * (far - st["stop"])                             # how far the stop sits beyond the FVG
+    assert ((gap >= 0.01 * st["atr"] - 1e-9) & (gap < 0.01 * st["atr"] + ctx.tick)).all()
 
 
 def test_g5_swap_keeps_entries_and_swaps_exits(ctx, regime):
@@ -378,13 +404,13 @@ def test_explore_family_is_ten_tests_and_report_renders(explore_res):
     assert len(res.rows) == 10 and {r["kind"] for r in res.rows} == {"main", "contrast"}
     assert all(r["adjustment"] == "Holm across 10 tests" and r["study"] == "gamma" for r in res.rows)
     g5 = res.trades["G5"]
-    assert set(g5["variant"]) == {"matched", "swapped"} and len(res.by_regime) == 4
+    assert set(g5["variant"]) == {"matched", "swapped"} and len(res.by_regime) == 6
     for r in res.rows:
         if r["kind"] == "main" and BY_ID[r["hypothesis"]].matched:
             t = res.trades[r["hypothesis"]]
             assert r["trades"] == int((t["regime"] == BY_ID[r["hypothesis"]].matched).sum())
     txt = stage_report(res)
-    assert "Contrasts" in txt and "G5 by regime and by FVG timeframe" in txt
+    assert "Contrasts" in txt and "G5 by regime, FVG timeframe and FVG at the level" in txt
 
 
 def test_random_walk_shows_no_gross_edge(explore_res):
