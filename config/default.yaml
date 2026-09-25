@@ -6,7 +6,9 @@
 # Distances written as {points: X, atr_frac: Y} resolve to
 #     max(X, Y * daily_ATR)
 # so a rule keeps the same meaning when NQ is at 2,000 (2010) or 25,000 (2025).
-# Set atr_frac to 0 to use fixed points only.
+# Set atr_frac to 0 to use fixed points only.  For an upper limit
+# (setup.stop.max_risk) the larger value is the limit, so set points to 0 to
+# cap in ATR only.
 # =============================================================================
 
 project:
@@ -201,7 +203,7 @@ setup:
     mode: swing                # swing: beyond the swept swing extreme | fvg: beyond the far FVG edge
     buffer: {points: 1.0, atr_frac: 0.01}
     min_risk: {points: 2.0, atr_frac: 0.02}   # skip setups with a stop tighter than this
-    max_risk: {points: 1.0e9, atr_frac: 0.40} # ...or wider than this
+    max_risk: {points: 0.0, atr_frac: 0.40}   # ...or wider than this (points > 0 would RAISE the cap)
   target:
     mode: r_multiple           # r_multiple | liquidity
     r_multiple: 2.0

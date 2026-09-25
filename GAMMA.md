@@ -201,7 +201,7 @@ If nothing passes explore, validate is not used.
 3. **Pooled G2, two levels swept by the same bar.** The orders are identical except for the level name. The first in the order Asia, London, prior day is taken, and the others are skipped as "position already open".
 4. **Fixed family size.** A test that cannot be computed (no trades) stays in the Holm family as p = 1, so the family is always the 10 tests declared above.
 
-*Erratum, found while preparing round 2:* the 40%-of-ATR maximum stop in G5 rule 6 was never applied. The harness's `setup.stop.max_risk` is `{points: 1e9, atr_frac: 0.40}`, and the harness takes the larger of the two, so the limit is 1e9 points. No round-1 G5 trade had a stop over 40% of ATR (0 of 190), so the explore results are unchanged.
+*Erratum, found while preparing round 2:* the 40%-of-ATR maximum stop in G5 rule 6 was never applied. The harness's `setup.stop.max_risk` is `{points: 1e9, atr_frac: 0.40}`, and the harness takes the larger of the two, so the limit is 1e9 points. No round-1 G5 trade had a stop over 40% of ATR (0 of 190), so the explore results are unchanged. *Fixed afterwards:* `max_risk` is now `{points: 0, atr_frac: 0.40}`, so the cap applies to round-1 G5 (`stop_at="fvg"`). Round 2 has no cap, so it is not affected.
 
 ---
 
