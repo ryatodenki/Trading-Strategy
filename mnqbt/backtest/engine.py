@@ -25,8 +25,9 @@ Later bars:
   * still open at ``flatten_ns``: market exit at that bar's open - slippage.
 
 Market entry (no-FVG variant): next bar open + slippage; target = entry + R * risk.
-No stop / no target (strategies/): ``stop`` / ``target`` NaN; R is then measured
-in the order's ``risk_unit`` (points) instead of the stop distance.
+No stop / no target (strategies/): ``stop`` / ``target`` NaN.  An order with a
+finite ``risk_unit`` (points) has its R measured in that unit instead of the
+stop distance (required when there is no stop).
 Costs: commission+fees per contract per side, both sides.  A position held
 across a contract roll (``Market.roll_ns``) pays a close and a reopen there:
 2 x commission and 2 x market slippage.
@@ -172,7 +173,7 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     """Simulate ONE order from placement to exit.  Returns (status, trade or None, busy_until_ns, event_ns).
 
     ``o_`` keys: placed_ns, dir, expire_ns, flatten_ns, stop, target, entry_type ('limit'|'market'),
-    entry, target_src, target_r, [cancel_reason_at_expiry], [risk_unit: points per R when stop is NaN].
+    entry, target_src, target_r, [cancel_reason_at_expiry], [risk_unit: points per R; required when stop is NaN].
     """
     ts, o, h, l = mk.ts, mk.open, mk.high, mk.low
     n = len(ts)
@@ -222,8 +223,9 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     risk = d * (entry - stop)
     if risk <= 0 or d * (target - entry) <= 0:
         return "invalid_levels", None, placed, int(ts[g0])
-    if np.isnan(stop):
-        risk = float(o_["risk_unit"])
+    unit = float(o_.get("risk_unit", np.nan))
+    if np.isfinite(unit):
+        risk = unit   # the order's own R unit (stopless strategies; patterns measure every trade in 10% of ATR)
     gx, reason, raw_exit, amb = exit_scan(mk, g0, i_flat, d, stop, target, st, limit_bar, resolver)
     if reason == "stop":
         exit_px = raw_exit - d * st.slippage_ticks_stop * st.tick

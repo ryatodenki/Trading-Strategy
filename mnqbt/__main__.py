@@ -187,6 +187,28 @@ def cmd_strategies(args, cfg):
     print(f"finalists: {res.finalists or 'none'}\nreport: {out}")
 
 
+def cmd_patterns(args, cfg):
+    """PATTERNS.md pattern search, one stage at a time; every test is logged."""
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.explore import log_report, out_dir, run_stage, stage_report
+
+    res = run_stage(cfg, args.dataset, args.stage, reps=args.reps, unlock_final=args.unlock_final)
+    d = out_dir(cfg, args.dataset)
+    rp.write(d / f"{args.stage}.md", stage_report(res))
+    rp.write(d / "README.md", log_report(cfg, args.dataset))
+    trade_dir = scratch_dir(cfg) / args.dataset / "patterns" / args.stage   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for h, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time")], errors="ignore").to_parquet(trade_dir / f"{h}.parquet")
+    if res.note:
+        print(res.note)
+    for r in res.rows:
+        eff = r.get("avg_r_net") if r["kind"] == "rule" else r.get("delta")
+        print(f"{r['hypothesis']:3s} {r['instrument']} {r['split']:8s} trades {r['trades']:6d}  effect {eff:+.3f}  "
+              f"p {r['p']:.4f}  adj {r.get('p_adj', float('nan')):.4f}  {'PASS' if r['passed'] else 'fail'}")
+    print(f"report: {d / (args.stage + '.md')}")
+
+
 def cmd_suite(args, cfg):
     from mnqbt.backtest.research import load_features, period_bounds, run_suite
     from mnqbt.reports import report as rp
@@ -378,6 +400,13 @@ def main(argv=None):
     p.add_argument("--n", type=int, default=9)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_charts)
+
+    p = sub.add_parser("patterns", help="PATTERNS.md pattern search: explore -> validate -> mes -> final")
+    p.add_argument("--stage", required=True, choices=["explore", "validate", "mes", "final"])
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
+    p.add_argument("--unlock-final", action="store_true", help="required for --stage final; only when told to")
+    p.set_defaults(fn=cmd_patterns)
 
     p = sub.add_parser("strategies", help="STRATEGIES.md candidates, development period only")
     p.add_argument("--dataset", default="real")

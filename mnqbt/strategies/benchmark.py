@@ -3,8 +3,8 @@ extended to holding periods of any length.
 
 Every trade keeps everything except its date: direction; entry time of day (or "the close"); holding
 length in exchange trading days and exit time of day (or "the close"); stop distance in daily ATRs
-from the last close before entry; target in R; and its R unit (1 ATR of the new day when there is no
-stop).  Each run moves every trade to a random entry-eligible day of the same period and trades it
+from the last close before entry; target in R; and its R unit, as the same share of the new day's ATR
+(or the stop distance, if that is how the trade measured R).  Each run moves every trade to a random entry-eligible day of the same period and trades it
 through the engine's own ``run_order``; a draw that does not trade is redrawn.
 p = share of runs whose mean net R is >= the strategy's, with +1 smoothing.
 """
@@ -46,6 +46,7 @@ def profile(ctx: Ctx, mk: Market, trades: pd.DataFrame) -> pd.DataFrame:
         "stop_atr": risk_ref / atr,
         "tgt_r": tgt_r,
         "r_multiple": (trades["target_src"] == "r_multiple").to_numpy(),
+        "unit_atr": (trades["risk_unit"].to_numpy(float) / atr) if "risk_unit" in trades else np.full(len(trades), np.nan),
     })
 
 
@@ -83,7 +84,7 @@ def random_benchmark(ctx: Ctx, mk: Market, st: EngineSettings, trades: pd.DataFr
     close_all = pd.Series(ctx.close_ns(ctx.days[pos.min(): last_pos + 1]), index=ctx.days[pos.min(): last_pos + 1])
     allowed = {h: np.flatnonzero(pos + h <= last_pos) for h in np.unique(pf["hold"])}
 
-    d, hold = pf["dir"].to_numpy(), pf["hold"].to_numpy()
+    d, hold, unit_atr = pf["dir"].to_numpy(), pf["hold"].to_numpy(), pf["unit_atr"].to_numpy()
     no_stop = np.isnan(pf["stop_atr"].to_numpy()) & np.isnan(pf["tgt_r"].to_numpy())
     tick = st.tick
     rng = np.random.default_rng(seed)
@@ -114,7 +115,7 @@ def random_benchmark(ctx: Ctx, mk: Market, st: EngineSettings, trades: pd.DataFr
             fast = no_stop[todo]
             if fast.any():
                 k = todo[fast]
-                res[k] = timed_r_net(mk, st, placed[fast], flat[fast], d[k], a[fast])
+                res[k] = timed_r_net(mk, st, placed[fast], flat[fast], d[k], unit_atr[k] * a[fast])
             for j in np.flatnonzero(~fast):
                 k = todo[j]
                 dk = int(d[k])
@@ -128,7 +129,7 @@ def random_benchmark(ctx: Ctx, mk: Market, st: EngineSettings, trades: pd.DataFr
                     target = float(_round(ref[j] + dk * pf["tgt_r"].iat[k] * dk * (ref[j] - stop), tick, np.array(dk > 0)))
                 order = {"placed_ns": int(placed[j]), "dir": dk, "expire_ns": int(flat[j]), "flatten_ns": int(flat[j]),
                          "stop": stop, "target": target, "entry_type": "market", "entry": np.nan, "target_src": src,
-                         "target_r": pf["tgt_r"].iat[k], "risk_unit": float(a[j])}
+                         "target_r": pf["tgt_r"].iat[k], "risk_unit": float(unit_atr[k] * a[j])}
                 _, trade, _, _ = run_order(mk, st, order)
                 if trade is not None:
                     res[k] = trade["r_net"]

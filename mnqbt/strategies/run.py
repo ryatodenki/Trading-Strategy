@@ -20,10 +20,10 @@ from mnqbt.strategies.common import Ctx
 from mnqbt.timeutil import ns
 
 
-def dev_frames(cfg: dict, a: pd.DataFrame, b: pd.DataFrame, flags: pd.DataFrame) -> tuple[Features, Market]:
-    """Features and market cut at research.dev_end: later bars are dropped before anything is computed.
-    Contract rolls (including the NQ -> MNQ switch) come from the continuous series' ``contract`` column."""
-    end = pd.Timestamp(get(cfg, "research.dev_end"))
+def dev_frames(cfg: dict, a: pd.DataFrame, b: pd.DataFrame, flags: pd.DataFrame, end=None) -> tuple[Features, Market]:
+    """Features and market cut at ``end`` (default research.dev_end): later bars are dropped before anything
+    is computed.  Contract rolls (including the proxy -> micro switch) come from the ``contract`` column."""
+    end = pd.Timestamp(end if end is not None else get(cfg, "research.dev_end"))
     a, b = (x[trading_dates(x.index, cfg) <= end] for x in (a, b))
     contract = a["contract"].astype(str).to_numpy()
     roll_ns = ns(a.index)[1:][contract[1:] != contract[:-1]]
