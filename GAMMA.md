@@ -200,3 +200,46 @@ If nothing passes explore, validate is not used.
 2. **Trailing stop timing (G5, negative gamma).** A swing is confirmed at the close of its 5-minute bar. The new stop applies from the next 1-minute bar. A bar that opens through the stop fills at its open, minus 1 tick.
 3. **Pooled G2, two levels swept by the same bar.** The orders are identical except for the level name. The first in the order Asia, London, prior day is taken, and the others are skipped as "position already open".
 4. **Fixed family size.** A test that cannot be computed (no trades) stays in the Holm family as p = 1, so the family is always the 10 tests declared above.
+
+*Erratum, found while preparing round 2:* the 40%-of-ATR maximum stop in G5 rule 6 was never applied. The harness's `setup.stop.max_risk` is `{points: 1e9, atr_frac: 0.40}`, and the harness takes the larger of the two, so the limit is 1e9 points. No round-1 G5 trade had a stop over 40% of ATR (0 of 190), so the explore results are unchanged.
+
+---
+
+## Round 2 — declared after the explore run, before any run on these dates
+
+After the explore run (nothing passed) and after seeing its example charts, you asked for three changes:
+- wider G5 stops, at the swing instead of just beyond the FVG;
+- still skip any trade whose reward is not bigger than its risk;
+- a rerun of everything on MNQ's own prices.
+
+G5 is revised **because of** what the 2011–2018 charts showed. So round 2 must be judged only on data that neither round has touched.
+
+### Data
+
+- **MNQ only: 2019-07-01 → 2022-12-30.** The harness switches from NQ to MNQ prices at the 2019-07-01 trading day. This is the MNQ part of the validate split.
+- No gamma test has used these dates. Earlier studies did (Step 3, STRATEGIES.md), as noted above.
+- Bars before 2019-07-01 are loaded only for ATR and level history.
+- Nothing after 2022-12-30 is loaded. **The final test (2023-01-03 onward) stays locked.**
+
+### Hypotheses
+
+- **G1–G4:** unchanged.
+- **G5:** unchanged except the stop.
+  - **Stop:** 1% of ATR beyond the latest 5-minute swing low (for longs; the latest swing high for shorts) confirmed by the time the order is placed.
+    - That swing is always at or beyond the FVG's far edge, so the stop is never tighter than in round 1.
+    - The minimum risk [max(2 pt, 2% of ATR)] still applies.
+    - The 40%-of-ATR maximum is dropped. The reward:risk rule limits the stop instead.
+  - **Reward:risk:** as before, the nearest key level beyond the entry must be more than 1× the (wider) stop distance away, or there is no trade. With no key level beyond the entry, the target is 2× the stop distance.
+  - **Trailing stop (negative gamma):** starts at this stop, then moves as before.
+
+### Tests and pass rule
+
+- Same as explore: 10 tests (main + contrast for G1–G5), Holm across 10.
+- A hypothesis passes if its main test has Holm-adjusted p < 0.05 with average R > 0, and its contrast Δ > 0.
+- **Description only:** G5 with the round-1 stop (beyond the FVG) on the same dates, to show what the wider stop changed.
+
+### What a pass would lead to
+
+A pass here is new evidence, because these dates are unseen by both rounds. But it has used up validate.
+- The next step would be the MES check on the same dates.
+- After that comes the final test (2023+), run once and only when you say so.

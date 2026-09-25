@@ -18,7 +18,7 @@ from mnqbt.rules.swings import swings
 from mnqbt.strategies.benchmark import random_benchmark
 from mnqbt.strategies.common import Ctx
 from mnqbt.strategies.explore import World, passed
-from mnqbt.strategies.gamma import BY_ID, HYPOTHESES, _G5Inputs, _setups, breakout
+from mnqbt.strategies.gamma import BY_ID, BY_ID_R2, HYPOTHESES, HYPOTHESES_R2, _G5Inputs, _setups, breakout
 from mnqbt.strategies.gamma_run import GammaWorld, _test_split, stage_report
 from mnqbt.strategies.patterns import BY_ID as H, R_ATR, _tod
 from mnqbt.strategies.run import dev_frames, run_each
@@ -139,7 +139,7 @@ def test_g2_g3_g4_reuse_the_declared_rules_unchanged(ctx):
     assert BY_ID["G2"].mode == "single" and BY_ID["G1"].mode == "single"
 
 
-def _g5_reference(ctx, regime, days) -> list[dict]:
+def _g5_reference(ctx, regime, days, stop_at="fvg") -> list[dict]:
     """GAMMA.md G5 re-derived FVG by FVG, straight from the text (slow; limited to ``days``)."""
     F, cfg, tick = ctx.F, ctx.cfg, ctx.tick
     b5 = F.bars("a", "5min")
@@ -193,9 +193,16 @@ def _g5_reference(ctx, regime, days) -> list[dict]:
             atr = ctx.atr_on(pd.DatetimeIndex([day]))[0]
             e = float(entry_price(np.array([z["top"]]), np.array([z["bottom"]]), np.array([d]), 0.5, tick)[0])
             buf = 0.01 * atr
-            stop = np.floor((z["bottom"] - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((z["top"] + buf) / tick - 1e-9) * tick
+            if stop_at == "fvg":
+                anchor, max_risk = (z["bottom"] if d > 0 else z["top"]), resolve_dist(sc["max_risk"], atr)
+            else:                                        # round 2: the latest swing on the stop side known by the order
+                opp = SW[-d][SW[-d]["known_ns"] <= int(z["known_ns"])]["price"].to_numpy()
+                if len(opp) == 0:
+                    continue
+                anchor, max_risk = opp[-1], np.inf
+            stop = np.floor((anchor - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((anchor + buf) / tick - 1e-9) * tick
             risk = d * (e - stop)
-            if not (risk > 0 and resolve_dist(sc["min_risk"], atr) <= risk <= resolve_dist(sc["max_risk"], atr)):
+            if not (risk > 0 and resolve_dist(sc["min_risk"], atr) <= risk <= max_risk):
                 continue
             t = int(z["known_ns"])
             r_order = int(np.searchsorted(start5, t)) - 1
@@ -238,10 +245,11 @@ def _g5_reference(ctx, regime, days) -> list[dict]:
     return out
 
 
-def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime):
-    it = breakout(ctx, regime)
+@pytest.mark.parametrize("stop_at", ["fvg", "swing"])
+def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime, stop_at):
+    it = breakout(ctx, regime, stop_at=stop_at)
     days = pd.DatetimeIndex(sorted(set(it["tdate"])))[:50]
-    ref = sorted(_g5_reference(ctx, regime, days), key=lambda r: (r["placed_ns"], r["fvg_tf"] != "15min", r["dir"]))
+    ref = sorted(_g5_reference(ctx, regime, days, stop_at), key=lambda r: (r["placed_ns"], r["fvg_tf"] != "15min", r["dir"]))
     got = it[it["tdate"].isin(days)].reset_index(drop=True)
     assert len(ref) >= 40 and len(got) == len(ref)
     for r, (_, g) in zip(ref, got.iterrows()):
@@ -256,7 +264,9 @@ def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime):
             assert np.allclose(g["trail_px"], r["trail_px"])
         assert g["exit_style"] == ("fixed" if r["regime"] > 0 else "trail") and g["entry_type"] == "limit"
     assert {"fixed", "trail"} <= set(got["exit_style"]) and {"5min", "15min"} <= set(got["fvg_tf"])
-    assert (got["replaced_at"] > 0).any() and got["level"].str.contains("vwap|vah|val").any()
+    assert got["level"].str.contains("vwap|vah|val").any()
+    if stop_at == "fvg":                                           # the sample covers a 15m replacement (wide stops: fewer setups)
+        assert (got["replaced_at"] > 0).any()
     assert got["at_level"].any() and not got["at_level"].all()
 
 
@@ -341,7 +351,7 @@ def test_no_trail_means_the_old_behaviour(cfg, ctx, world, regime):
 def test_every_decision_is_reproducible_from_data_before_placement(cfg, data, ctx, regime):
     a, b, flags = data
     checked = 0
-    for h in HYPOTHESES:
+    for h in HYPOTHESES + (BY_ID_R2["G5"],):
         full = _build(h, ctx, regime)
         for k in np.unique(np.linspace(len(full) // 3, len(full) - 1, 3).astype(int)):
             row = full.iloc[k]
@@ -454,3 +464,41 @@ def test_g5_trade_charts_render(cfg, world, regime, tmp_path):
         f = plot_g5_trade(ctx, g, it.loc[int(t["intent"])], t, 1.5e9, tmp_path / f"{style}.png")
         assert f.stat().st_size > 20_000
     assert plot_g5_equity(tr, tmp_path / "eq.png", "t").stat().st_size > 10_000
+
+
+def test_round2_g5_stop_is_never_tighter_than_round1(ctx, regime):
+    a, b = breakout(ctx, regime), breakout(ctx, regime, stop_at="swing")
+    far = np.where(b["dir"] > 0, b["fvg_bottom"], b["fvg_top"])
+    beyond = b["dir"] * (far - b["stop"])                          # how far the stop sits beyond the FVG's far edge
+    assert (beyond >= 0.01 * b["atr"] - 1e-9).all()
+    assert b["stop_dist"].mean() > a["stop_dist"].mean() and (b["reward_risk"] > 1.0).all()
+    small = copy.copy(ctx)
+    small.atr = ctx.atr * 0.2                                      # small ATRs: some swing stops exceed 40% of ATR
+    g = _G5Inputs(small)
+    wide = pd.concat([_setups(small, g, tf, d, regime, "swing") for tf in ("5min", "15min") for d in (1, -1)])
+    assert (wide["stop_dist"] > 0.40 * wide["atr"]).any()          # no 40%-of-ATR cap in round 2
+
+
+def test_round2_g5_stop_swing_was_known_when_the_order_went_in(ctx, regime):
+    """Every order: the swing that sets the stop was confirmed by the order time, is the latest such swing on the
+    stop side, and the stop is 1% of ATR beyond it (checked on all orders, not a sample)."""
+    b = breakout(ctx, regime, stop_at="swing")
+    sw = swings(ctx.F.bars("a", "5min"), 2)
+    assert (b["stop_ref_ns"] <= b["placed_ns"]).all()
+    for _, r in b.iterrows():
+        opp = sw[(sw["kind"] == -r["dir"]) & (sw["known_ns"] <= r["placed_ns"])].sort_values("known_ns")
+        assert opp["known_ns"].iat[-1] == r["stop_ref_ns"]
+        raw = opp["price"].iat[-1] - r["dir"] * 0.01 * r["atr"]
+        want = np.floor(raw / ctx.tick + 1e-9) * ctx.tick if r["dir"] > 0 else np.ceil(raw / ctx.tick - 1e-9) * ctx.tick
+        assert r["stop"] == pytest.approx(want)
+
+
+def test_round2_family_is_ten_tests(cfg, world, regime):
+    ctx, mk = world
+    w = World(ctx, mk, EngineSettings.from_cfg(cfg), ctx.first_day, ctx.last_day, "MNQ", "mnq")
+    res = _test_split(cfg, GammaWorld(w, regime), [h.id for h in HYPOTHESES_R2], "mnq", reps=10, holm_on_contrasts=True,
+                      bench=False, by_id=BY_ID_R2)
+    assert len(res.rows) == 10 and all(r["adjustment"] == "Holm across 10 tests" for r in res.rows)
+    t = res.trades["G5"]
+    t = t[t["variant"] == "matched"]
+    assert (t["exit_style"].isin(["fixed", "trail"])).all() and len(t) > 10

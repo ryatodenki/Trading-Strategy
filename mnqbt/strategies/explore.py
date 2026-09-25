@@ -33,7 +33,8 @@ from mnqbt.strategies.common import Ctx
 from mnqbt.strategies.patterns import BY_ID, FILTERS, HYPOTHESES, RULES, Hypothesis, daily_trend, news_days
 from mnqbt.strategies.run import dev_frames, run_each
 
-SPLITS = {"explore": ("2010-06-07", "2018-08-09"), "validate": ("2018-08-10", "2022-12-30"), "final": ("2023-01-03", "2100-01-01")}
+SPLITS = {"explore": ("2010-06-07", "2018-08-09"), "validate": ("2018-08-10", "2022-12-30"), "final": ("2023-01-03", "2100-01-01"),
+          "mnq": ("2019-07-01", "2022-12-30")}   # mnq: the MNQ-priced part of validate (GAMMA.md round 2)
 POINT_VALUE = {"MNQ": 2.0, "MES": 5.0}
 PAIR = {"MNQ": "MES", "MES": "MNQ"}
 BOOT = 10_000

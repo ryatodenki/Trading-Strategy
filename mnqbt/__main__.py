@@ -501,7 +501,8 @@ def main(argv=None):
 
     p = sub.add_parser("gamma", help="GAMMA.md gamma-regime study: explore -> validate -> mes -> final")
     p.add_argument("--dataset", default="real")
-    p.add_argument("--stage", choices=["explore", "validate", "mes", "final"], required=True)
+    p.add_argument("--stage", choices=["explore", "validate", "mes", "final", "mnq"], required=True,
+                   help="mnq = round 2: MNQ 2019-07-01 .. 2022-12-30 (GAMMA.md)")
     p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
     p.add_argument("--unlock-final", action="store_true", help="allow the final test (only when told to)")
     p.set_defaults(fn=cmd_gamma)

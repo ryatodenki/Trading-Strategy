@@ -26,7 +26,7 @@ from mnqbt.reports.metrics import holm
 from mnqbt.strategies.benchmark import random_benchmark
 from mnqbt.strategies.explore import (ALPHA, SPLITS, World, _f, _p, append_log, bootstrap_diff, deflated_sharpe, load_world,
                                       out_dir, passed, read_log, rule_stats)
-from mnqbt.strategies.gamma import BY_ID, HYPOTHESES, GammaHypothesis
+from mnqbt.strategies.gamma import BY_ID, BY_ID_R2, HYPOTHESES, HYPOTHESES_R2, GammaHypothesis
 from mnqbt.strategies.run import run_each
 
 STUDY = "gamma"
@@ -126,11 +126,11 @@ def _main_and_contrast(h: GammaHypothesis, gw: GammaWorld, cfg: dict) -> tuple[d
 
 
 def _test_split(cfg: dict, gw: GammaWorld, ids: list[str], stage: str, reps: int, holm_on_contrasts: bool,
-                bench: bool) -> GammaResult:
+                bench: bool, by_id: dict = BY_ID) -> GammaResult:
     res = GammaResult(stage, regime_days=[{"instrument": gw.w.instrument, "split": gw.w.split, **regime_days(gw)}])
     mains, contrasts = [], []
     for hid in ids:
-        h = BY_ID[hid]
+        h = by_id[hid]
         main, con, t, extra = _main_and_contrast(h, gw, cfg)
         mains.append(main)
         contrasts.append(con)
@@ -152,9 +152,9 @@ def _test_split(cfg: dict, gw: GammaWorld, ids: list[str], stage: str, reps: int
                      end=str(w.end.date()), adjustment=family, passed=bool(ok))
         if stage == "explore" and len(srs) >= 2 and main["trades"]:
             t = res.trades[main["hypothesis"]]
-            t = t[t["variant"] == "matched"] if "variant" in t else t[t["regime"] == BY_ID[main["hypothesis"]].matched]
+            t = t[t["variant"] == "matched"] if "variant" in t else t[t["regime"] == by_id[main["hypothesis"]].matched]
             main["deflated_sharpe"] = deflated_sharpe(t["r_net"].to_numpy(float), srs)
-        h = BY_ID[main["hypothesis"]]
+        h = by_id[main["hypothesis"]]
         if bench and ok and h.matched != 0:
             t = res.trades[h.id]
             t = t[t["regime"] == h.matched]
@@ -193,6 +193,15 @@ def run_stage(cfg: dict, dataset: str, stage: str, reps: int = 1000, unlock_fina
             for r in res.rows:
                 if r["hypothesis"] == h:
                     r.update(p_combined=pc, passed=bool(holds), adjustment="Stouffer across the two periods")
+    elif stage == "mnq":
+        # round 2 (GAMMA.md): G1-G4 and the wider-stop G5 on MNQ 2019-07-01 .. 2022-12-30; Holm across 10
+        gw = load_gamma_world(cfg, dataset, "MNQ", "mnq", gex)
+        ids = [h.id for h in HYPOTHESES_R2]
+        res = _test_split(cfg, gw, ids, stage, reps, True, bench=True, by_id=BY_ID_R2)
+        old = hypothesis_trades(BY_ID["G5"], gw)                 # description only: G5 with the round-1 stop
+        res.by_regime.append({"hypothesis": "G5", "group": "round-1 stop (beyond the FVG), same dates", "trades": len(old),
+                              "avg_r_net": float(old["r_net"].mean()) if len(old) else None, "avg_r_net_swapped": None,
+                              "avg_r_gross": float(old["r_gross"].mean()) if len(old) else None})
     elif stage == "final":
         if not unlock_final:
             raise SystemExit("the final test is locked: pass unlock_final / --unlock-final only when told to")

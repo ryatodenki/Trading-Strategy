@@ -92,10 +92,12 @@ class _G5Inputs:
         self.flat = F.flatten_ns(cfg)
 
 
-def _setups(ctx: Ctx, g: _G5Inputs, tf: str, d: int, regime: pd.Series) -> pd.DataFrame:
+def _setups(ctx: Ctx, g: _G5Inputs, tf: str, d: int, regime: pd.Series, stop_at: str = "fvg") -> pd.DataFrame:
     """Direction-``d`` breakout FVGs on ``tf``: the FVG's candles carried price through a key level (candle 1
     opened at or below it, candle 3 closed above it, for a long), in 5-minute higher-high / higher-low structure;
-    levels and swings as known when candle 1 starts."""
+    levels and swings as known when candle 1 starts.  Stop 1% of ATR beyond the FVG's far edge (``stop_at="fvg"``,
+    round 1) or beyond the latest 5-minute swing low (long) / high (short) confirmed by the order (``"swing"``,
+    round 2, no maximum risk)."""
     fv = _fvgs(ctx, tf)
     fv = fv[fv["dir"] == d].reset_index(drop=True)
     bars = ctx.F.bars("a", tf)
@@ -135,13 +137,26 @@ def _setups(ctx: Ctx, g: _G5Inputs, tf: str, d: int, regime: pd.Series) -> pd.Da
     atr = ctx.atr_on(day)
     entry = entry_price(top, bottom, np.full(len(fv), d), 0.5, ctx.tick)
     buf = BUFFER_ATR * atr
-    stop = _round((bottom - buf) if d > 0 else (top + buf), d < 0, ctx.tick)
+    placed = fv["known_ns"].to_numpy(np.int64)
+    if stop_at == "fvg":
+        anchor, anchor_ns = (bottom if d > 0 else top), placed           # the FVG, confirmed at the order
+        max_risk = resolve_dist(g.max_risk, atr)
+    elif stop_at == "swing":
+        kn, px = g.sw[-d]                                     # swing lows for a long, swing highs for a short
+        j = np.searchsorted(kn, placed, side="right") - 1     # the latest one confirmed by the order
+        anchor = np.where(j >= 0, px[np.maximum(j, 0)], np.nan)
+        anchor_ns = np.where(j >= 0, kn[np.maximum(j, 0)], 0)
+        max_risk = np.full(len(fv), np.inf)
+    else:
+        raise ValueError(stop_at)
+    stop = _round(anchor - d * buf, d < 0, ctx.tick)
     risk = d * (entry - stop)
     with np.errstate(invalid="ignore"):
-        ok = (risk > 0) & (risk >= resolve_dist(g.min_risk, atr)) & (risk <= resolve_dist(g.max_risk, atr))
+        ok = np.isfinite(risk) & (risk > 0) & (risk >= resolve_dist(g.min_risk, atr)) & (risk <= max_risk)
     return pd.DataFrame({"placed_ns": fv["known_ns"].to_numpy(np.int64)[ok], "dir": d, "fvg_tf": tf, "tdate": day[ok],
                          "entry": entry[ok], "stop": stop[ok], "stop_dist": risk[ok], "atr": atr[ok], "buffer": buf[ok],
                          "fvg_top": top[ok], "fvg_bottom": bottom[ok], "fvg_c1_ns": fv["c1_start_ns"].to_numpy(np.int64)[ok],
+                         "stop_ref_ns": np.asarray(anchor_ns, np.int64)[ok],
                          "level": names[ok], "at_level": at_level[ok]})
 
 
@@ -161,7 +176,7 @@ def _nearest_level(ctx: Ctx, g: _G5Inputs, st: pd.DataFrame) -> np.ndarray:
     return out
 
 
-def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
+def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False, stop_at: str = "fvg") -> pd.DataFrame:
     """G5 (GAMMA.md): a 5- or 15-minute FVG whose candles broke a key level, in the direction of 5-minute
     structure; taken only if the nearest key level beyond the entry is more than 1x the stop distance away;
     limit entry at the FVG midpoint (a 15-minute setup replaces a waiting 5-minute order); stop 1% of ATR
@@ -169,10 +184,10 @@ def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
     (``swap`` reverses that, for the contrast)."""
     g = _G5Inputs(ctx)
     tick = ctx.tick
-    st = pd.concat([_setups(ctx, g, tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)], ignore_index=True)
+    st = pd.concat([_setups(ctx, g, tf, d, regime, stop_at) for tf in ("5min", "15min") for d in (1, -1)], ignore_index=True)
     cols = INTENT_COLUMNS + ["expire_ns", "entry_type", "entry", "trail_ns", "trail_px", "exit_style", "regime", "level",
                              "at_level", "fvg_tf", "target_kind", "stop_dist", "reward_risk", "replaced_at", "fvg_top", "fvg_bottom",
-                             "fvg_c1_ns"]
+                             "fvg_c1_ns", "stop_ref_ns"]
     if st.empty:
         return pd.DataFrame(columns=cols)
     # reward:risk more than 1:1 to the nearest key level beyond the entry (none: the 2x fallback)
@@ -227,6 +242,7 @@ def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
             "target_kind": "none" if trail[i] else ("level" if found[i] else "2x_stop"), "stop_dist": float(risk[i]),
             "reward_risk": float(rr[i]), "replaced_at": int(replaced[i]), "fvg_top": float(st["fvg_top"].iat[i]),
             "fvg_bottom": float(st["fvg_bottom"].iat[i]), "fvg_c1_ns": int(st["fvg_c1_ns"].iat[i]),
+            "stop_ref_ns": int(st["stop_ref_ns"].iat[i]),
         })
     out = pd.DataFrame(rows)[cols]
     out["_rank"] = out["fvg_tf"].map(TF_RANK)
@@ -253,3 +269,11 @@ HYPOTHESES: tuple[GammaHypothesis, ...] = (
                     breakout, "single", 0),
 )
 BY_ID = {h.id: h for h in HYPOTHESES}
+
+# Round 2 (GAMMA.md, MNQ 2019-07 -> 2022-12): G1-G4 unchanged; G5 with the stop beyond the latest swing
+HYPOTHESES_R2: tuple[GammaHypothesis, ...] = HYPOTHESES[:4] + (
+    GammaHypothesis("G5", "breakout_gamma_exits_swing_stop",
+                    "Key-level breakout FVG (15m over 5m), stop beyond the latest swing, R:R > 1; fixed target (+gamma) / "
+                    "trailing stop (-gamma)", partial(breakout, stop_at="swing"), "single", 0),
+)
+BY_ID_R2 = {h.id: h for h in HYPOTHESES_R2}
