@@ -1,6 +1,6 @@
 import pytest
 
-from mnqbt.config import apply_overrides
+from mnqbt.config import apply_overrides, get, resolve_dist
 from mnqbt.data.build import combined_day_flags
 from mnqbt.data.continuous import build_continuous
 from mnqbt.data.synthetic import generate
@@ -43,3 +43,14 @@ def test_trend_confirmation_matches_its_definition(cfg, features):
 def test_unknown_confirmation_is_rejected(cfg, features):
     with pytest.raises(ValueError, match="unknown setup.confirm"):
         build_intents(features, apply_overrides(cfg, {"setup.confirm": ["gamma"]}))
+
+
+def test_stop_wider_than_40_percent_of_atr_is_skipped(cfg, features):
+    assert resolve_dist(get(cfg, "setup.stop.max_risk"), 100.0) == pytest.approx(40.0)
+    capped = _orders(features, cfg, [])
+    old = {"setup.stop.max_risk": {"points": 1.0e9, "atr_frac": 0.40}}      # the setting before the fix: no cap at all
+    uncapped = _orders(features, apply_overrides(cfg, old), [])
+    wide = uncapped["risk"] > 0.40 * uncapped["atr"]
+    assert wide.any()                                                    # the sample has some to skip
+    assert (capped["risk"] <= 0.40 * capped["atr"]).all()
+    assert set(capped.index) == set(uncapped.index[~wide])

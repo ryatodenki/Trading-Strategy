@@ -293,6 +293,19 @@ def test_g5_stop_buffer_is_one_percent_of_atr_even_when_that_is_under_a_point(ct
     assert ((gap >= 0.01 * st["atr"] - 1e-9) & (gap < 0.01 * st["atr"] + ctx.tick)).all()
 
 
+def test_g5_round1_skips_stops_wider_than_40_percent_of_atr(ctx, regime):
+    small = copy.copy(ctx)
+    small.atr = ctx.atr * 0.05                                       # tiny ATRs: many FVG stops exceed 40% of ATR
+    g = _G5Inputs(small)
+    capped = pd.concat([_setups(small, g, tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)])
+    g.max_risk = {"points": 1.0e9, "atr_frac": 0.40}                 # the setting before the fix: no cap at all
+    uncapped = pd.concat([_setups(small, g, tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)])
+    wide = uncapped["stop_dist"] > 0.40 * uncapped["atr"]
+    assert wide.any() and len(capped)
+    assert (capped["stop_dist"] <= 0.40 * capped["atr"]).all()
+    pd.testing.assert_frame_equal(capped.reset_index(drop=True), uncapped[~wide].reset_index(drop=True))
+
+
 def test_g5_swap_keeps_entries_and_swaps_exits(ctx, regime):
     a, b = breakout(ctx, regime), breakout(ctx, regime, swap=True)
     key = ["placed_ns", "dir", "entry", "stop", "expire_ns", "regime"]

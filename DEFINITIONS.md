@@ -95,6 +95,7 @@ The earlier 5-minute version is still available as `rules.smt.mode: swing`: two 
    - Rounded one tick deeper when it falls between ticks.
 4. **Stop.** One buffer beyond the **trigger swing's extreme**, buffer = max(1 pt, 0.01 × ATR).
    - Setups are skipped when the risk is under max(2 pts, 0.02 × ATR) (costs would dominate) or over 0.4 × ATR.
+   - *Erratum:* the 0.4 × ATR cap was not applied in any run logged before this note. The config had `max_risk: {points: 1e9, atr_frac: 0.40}`, and distances resolve to the larger part, so the cap was 1e9 points. It is now `{points: 0, atr_frac: 0.40}`. Runs made without the cap: Step 3 on real data ([results/real/step3_variants.md](results/real/step3_variants.md), its charts and [example signals](results/real/examples/README.md)): 789 of 52,293 trades (1.5%) had wider stops, including 43 of the baseline's 3,686. Also everything under `results/synthetic/` (Steps 3–4, holdout). Those files are left as they were run. Not affected: STRATEGIES.md and PATTERNS.md, which don't use this setting; GAMMA.md G5 round 1 (0 of 190 trades over the cap); and G5 round 2, which has no cap.
    - Variant: stop beyond the far edge of the FVG.
 5. **Target.** **2R** fixed.
    - Variant: the nearest opposing key level at least 1R away. If none exists, 2R is used, so both variants take identical entries.
