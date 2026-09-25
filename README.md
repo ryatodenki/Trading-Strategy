@@ -2,7 +2,8 @@
 
 This turns a discretionary MNQ (Micro Nasdaq-100) setup into exact, testable
 rules and measures which parts, if any, have an edge after costs:
-key level + fair value gap + SMT divergence vs MES, plus mood, structure,
+key level + fair value gap, confirmed by SMT vs MES on session levels or by a
+trending market, plus mood, structure,
 VWAP and value area.
 
 **Research only.** Nothing here connects to a broker or places orders.

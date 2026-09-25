@@ -61,12 +61,6 @@ def _atr(d: pd.DataFrame, cfg: dict) -> np.ndarray:
     return _prior_full(d, d.loc[d["full"], "tr"].rolling(n_atr, min_periods=n_atr).mean().to_numpy())
 
 
-def daily_atr(m1: pd.DataFrame, flags: pd.DataFrame, cfg: dict) -> pd.Series:
-    """Daily ATR by trading date, as in ``daily_table`` (used for the SMT pair's own scale)."""
-    d = _daily_bars(m1, flags)
-    return pd.Series(_atr(d, cfg), index=d.index, name="atr")
-
-
 def daily_table(m1: pd.DataFrame, flags: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """One row per trading date: OHLC, TR, full-day flag, ATR, prior-day levels, vol regime, prior VA."""
     d = _daily_bars(m1, flags)

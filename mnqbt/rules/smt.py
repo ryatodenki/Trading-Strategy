@@ -5,15 +5,25 @@ a swing HIGH is a potential bearish reversal, a swing LOW a bullish one.
 Two independent yes/no tags are attached, so the backtest can require either,
 both, or neither (Step 3 "remove one condition"):
 
-SMT (bearish case; bullish mirrors with lows):
+SMT, ``smt.mode: session`` (bearish case; bullish mirrors with lows):
+    L_MNQ, L_MES = the same session / prior-day high on each index (e.g. the
+                   London high), as known at the start of swing bar j
+    MNQ took it:  high_MNQ[j] - L_MNQ  in [min_size, tolerance]
+    MES took it:  max(high_MES[j-w .. j+w]) - L_MES >= min_size
+    SMT  <=>  MNQ took its level and MES did not, or MES took its level and
+              MNQ's swing stopped at most ``tolerance`` short of its own
+    e.g. both indices made a London high; in NY only one of them takes it out.
+
+SMT, ``smt.mode: swing`` (the older 5m version):
     p  = previous MNQ swing high, between ``min_separation_bars`` and
          ``lookback_bars`` bars before the current swing high j
     MNQ higher high:  high_MNQ[j] > high_MNQ[p]
     MES higher high:  max(high_MES[j-w .. j+w]) > max(high_MES[p-w .. p+w])
     SMT  <=>  exactly one of the two made a higher high   ("or vice versa")
-              and that one beat its previous high by >= smt.min_size,
-              measured in its own points and its own daily ATR
-    (w = align_window_bars, capped at swing_n so nothing after confirmation is used)
+              and that one beat its previous high by >= smt.min_size
+
+min_size and tolerance are measured in each index's own points and daily ATR;
+w = align_window_bars, capped at swing_n so nothing after confirmation is used.
 
 Key level (``levels.mode``):
   near  : |MNQ swing extreme - nearest key level| <= tolerance
@@ -33,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 from mnqbt.config import get, resolve_dist
-from mnqbt.rules.levels import level_columns, nearest_level
+from mnqbt.rules.levels import SESSION_NAMES, level_columns, nearest_level
 from mnqbt.rules.swings import swing_flags
 
 
@@ -60,10 +70,41 @@ def _swept(levels: pd.DataFrame, rows: np.ndarray, cols: list[str], price: np.nd
     return np.where(hit, np.array(cols, dtype=object)[best], ""), np.where(hit, d, np.nan)
 
 
+def _session_smt(levels: pd.DataFrame, levels_b: pd.DataFrame, j: np.ndarray, cols: list[str], side: int,
+                 a_now: np.ndarray, b_now: np.ndarray, tol: np.ndarray, min_a: np.ndarray, min_b: np.ndarray):
+    """Session SMT at swings ``j``: (smt, leader, level name, MNQ level, MES level); the level nearest MNQ's extreme wins."""
+    if not cols:
+        empty = np.full(len(j), np.nan)
+        return np.zeros(len(j), bool), np.full(len(j), "", dtype=object), np.full(len(j), "", dtype=object), empty, empty
+    la, lb = levels[cols].to_numpy(float)[j], levels_b[cols].to_numpy(float)[j]
+    a_by, b_by = side * (a_now[:, None] - la), side * (b_now[:, None] - lb)
+    with np.errstate(invalid="ignore"):
+        a_took = (a_by >= min_a[:, None] - 1e-9) & (a_by <= tol[:, None])
+        a_short = (a_by <= 0) & (a_by >= -tol[:, None])     # MNQ stopped at most `tol` short of its level
+        b_took, b_not = b_by >= min_b[:, None] - 1e-9, b_by <= 0
+    mnq_leads, mes_leads = a_took & b_not, b_took & a_short
+    best = np.where(mnq_leads | mes_leads, np.abs(a_by), np.inf).argmin(axis=1)
+    r = np.arange(len(j))
+    smt = (mnq_leads | mes_leads)[r, best]
+    leader = np.where(smt, np.where(mnq_leads[r, best], "MNQ", "MES"), "")
+    name = np.where(smt, np.array(cols, dtype=object)[best], "")
+    return smt, leader, name, np.where(smt, la[r, best], np.nan), np.where(smt, lb[r, best], np.nan)
+
+
+def session_smt_columns(cfg: dict, side: int) -> list[str]:
+    """Levels a session SMT can use: the same level exists on both indices at the same time."""
+    use, s = set(get(cfg, "rules.smt.levels")), "h" if side > 0 else "l"
+    return (["pd" + s] if "prior_day" in use else []) + ([f"{n}_{s}" for n in SESSION_NAMES] if "sessions" in use else [])
+
+
 def detect_triggers(a: pd.DataFrame, b: pd.DataFrame, levels: pd.DataFrame, atr: np.ndarray, atr_b: np.ndarray,
-                    cfg: dict) -> pd.DataFrame:
-    """``a`` = MNQ bars, ``b`` = MES bars reindexed onto ``a`` (NaN where missing); ``atr`` / ``atr_b`` their daily ATRs."""
+                    cfg: dict, levels_b: pd.DataFrame | None = None) -> pd.DataFrame:
+    """``a`` = MNQ bars, ``b`` = MES bars reindexed onto ``a`` (NaN where missing); ``atr`` / ``atr_b`` their daily ATRs;
+    ``levels_b`` = MES level table on ``a``'s rows (needed for ``smt.mode: session``)."""
     s = get(cfg, "rules.smt")
+    session = s["mode"] == "session"
+    if session and levels_b is None:
+        raise ValueError("smt.mode 'session' needs the MES level table (levels_b)")
     n = int(s["swing_n"])
     w = min(int(s["align_window_bars"]), n)
     lookback, min_sep = int(s["lookback_bars"]), int(s["min_separation_bars"])
@@ -97,6 +138,11 @@ def detect_triggers(a: pd.DataFrame, b: pd.DataFrame, levels: pd.DataFrame, atr:
             big_enough = np.where(a_better, side * (a_now - a_prev) >= min_a[j] - 1e-9,
                                   side * (b_now - b_prev) >= min_b[j] - 1e-9)
         smt = valid & (a_better != b_better) & big_enough
+        leader = np.where(smt, np.where(a_better, "MNQ", "MES"), "")
+        smt_name, smt_la, smt_lb = np.full(len(j), "", dtype=object), np.full(len(j), np.nan), np.full(len(j), np.nan)
+        if session:
+            smt, leader, smt_name, smt_la, smt_lb = _session_smt(levels, levels_b, j, session_smt_columns(cfg, side), side,
+                                                                 a_now, b_now, tol[j], min_a[j], min_b[j])
 
         core_cols = level_columns(cfg, side, include_value_area=False)
         va_cols = ["vah" if side > 0 else "val"]
@@ -121,7 +167,10 @@ def detect_triggers(a: pd.DataFrame, b: pd.DataFrame, levels: pd.DataFrame, atr:
                     "pair_now": b_now,
                     "pair_prev": np.where(has_p, b_prev, np.nan),
                     "smt": smt,
-                    "smt_leader": np.where(smt, np.where(a_better, "MNQ", "MES"), ""),
+                    "smt_leader": leader,
+                    "smt_level": smt_name,             # session mode: the level both indices were tested at
+                    "smt_level_a": smt_la,
+                    "smt_level_b": smt_lb,
                     "level_core": core_name,
                     "dist_core": core_dist,
                     "near_core": core_dist <= t,

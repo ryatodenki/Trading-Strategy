@@ -14,6 +14,7 @@ BREAKDOWNS = {
     "direction": "direction",
     "vol regime": "vol_state",
     "key level": "level",
+    "confirmation": "confirm",
     "SMT leader": "smt_leader",
     "VWAP side": "vwap_side",
     "value area": "va_loc",

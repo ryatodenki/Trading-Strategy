@@ -2,8 +2,8 @@
 
 Sequence for one trigger (a confirmed MNQ swing, see rules/smt.py):
 
-1. Required core conditions: key level (swing extreme within tolerance of a
-   key level) and/or SMT divergence.
+1. Required core condition: key level (the swing swept a key level, or made a
+   session SMT at a level both indices share).
 2. Entry zone: the first FVG in the trade direction whose first candle starts
    at or after the swing bar and which is confirmed no later than
    ``max_minutes_smt_to_fvg`` after the trigger.  It must still be fresh and
@@ -14,7 +14,8 @@ Sequence for one trigger (a confirmed MNQ swing, see rules/smt.py):
    Setups whose risk is outside [min_risk, max_risk] are skipped.
 4. Target: fixed R multiple, or the nearest opposing key level at least
    ``liquidity_min_r`` R away.
-5. Filters evaluated with information available at placement time.
+5. Confirmation (any of ``setup.confirm``: SMT, or a trending one-sided
+   market) and filters, evaluated with information available at placement time.
 6. Order expiry: first of max_wait, FVG expiry, the next no-entry window,
    flatten time, and (structure filter on) a structure flip against the trade.
 """
@@ -59,24 +60,28 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
     va_levels = bool(flt["value_area"]) and get(cfg, "rules.value_area.mode") == "levels"
     funnel: dict[str, int] = {}
 
+    confirm = set(s["confirm"] or [])
+    if confirm - {"smt", "trend"}:
+        raise ValueError(f"unknown setup.confirm entries: {sorted(confirm - {'smt', 'trend'})}")
+
     trig = F.triggers(cfg)
     funnel["triggers (all MNQ swings)"] = len(trig)
     prox = "sweep" if get(cfg, "rules.levels.mode") == "sweep" else "near"
-    near = trig[f"{prox}_core"].to_numpy() | (va_levels & trig[f"{prox}_va"].to_numpy())
+    # a session SMT happens AT a level both indices share, so it counts as a key level
+    session_smt = trig["smt"].to_numpy() & (get(cfg, "rules.smt.mode") == "session")
+    near = trig[f"{prox}_core"].to_numpy() | (va_levels & trig[f"{prox}_va"].to_numpy()) | session_smt
     keep = np.ones(len(trig), bool)
     if req["key_level"]:
         keep &= near
         funnel["at a key level"] = int(keep.sum())
-    if req["smt"]:
-        keep &= trig["smt"].to_numpy()
-        funnel["with SMT"] = int(keep.sum())
     trig = trig[keep].reset_index(drop=True)
-    near = near[keep]
+    near, session_smt = near[keep], session_smt[keep]
     name_c, dist_c, name_v, dist_v = (("level_core", "dist_core", "level_va", "dist_va") if prox == "near" else
                                       ("sweep_level_core", "sweep_depth_core", "sweep_level_va", "sweep_depth_va"))
     use_va_name = va_levels & (trig[dist_v].fillna(np.inf).to_numpy() < trig[dist_c].fillna(np.inf).to_numpy())
     level_name = np.where(use_va_name, trig[name_v].to_numpy(), trig[name_c].to_numpy())
     level_name = np.where(near, level_name, "")
+    level_name = np.where(session_smt, trig["smt_level"].to_numpy(), level_name)
 
     ts = F.ts
     lo1, hi1, cl1 = (F.a1[k].to_numpy(float) for k in ("low", "high", "close"))
@@ -123,8 +128,8 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
     if it.empty:
         return it, funnel
     tr = trig.loc[it["trig"].to_numpy()].reset_index(drop=True)
-    for c in ("dir", "extreme", "start_ns", "known_ns", "smt", "smt_leader", "atr", "prev_extreme", "pair_now", "pair_prev", "pos", "prev_pos",
-              "level_pos"):
+    for c in ("dir", "extreme", "start_ns", "known_ns", "smt", "smt_leader", "smt_level", "smt_level_a", "smt_level_b", "atr",
+              "prev_extreme", "pair_now", "pair_prev", "pos", "prev_pos", "level_pos"):
         it[c if c not in ("start_ns", "known_ns", "pos", "prev_pos", "level_pos") else f"trig_{c}"] = tr[c].to_numpy()
     it["level"] = level_name[it["trig"].to_numpy()]
     d = it["dir"].to_numpy()
@@ -229,6 +234,16 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
     for name, m in base:
         mask &= m
         funnel[name] = int(mask.sum())
+
+    # confirmation: SMT, or a trending market in the trade direction (1h structure agrees,
+    # not choppy, entry on the trend side of VWAP); any one listed in setup.confirm is enough
+    smt_ok = it["smt"].to_numpy(bool)
+    trend_ok = (state == d) & ~it["choppy"].to_numpy(bool) & np.where(d > 0, e > vwap_now, e < vwap_now)
+    it["confirm"] = np.where(smt_ok & trend_ok, "smt+trend", np.where(smt_ok, "smt", np.where(trend_ok, "trend", "none")))
+    if confirm:
+        ok = (smt_ok if "smt" in confirm else False) | (trend_ok if "trend" in confirm else False)
+        mask &= ok
+        funnel["confirmed: " + " or ".join(sorted(confirm))] = int(mask.sum())
 
     mood = get(cfg, "rules.mood")
     if flt["mood"]:

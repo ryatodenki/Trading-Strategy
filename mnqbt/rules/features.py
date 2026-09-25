@@ -17,7 +17,7 @@ from mnqbt.config import get, resolve_dist
 from mnqbt.data.sessions import annotate, et_time_on_tdate
 from mnqbt.rules.bars import resample
 from mnqbt.rules.fvg import detect_fvgs
-from mnqbt.rules.levels import daily_atr, daily_table, level_table
+from mnqbt.rules.levels import daily_table, level_table
 from mnqbt.rules.mood import chop_table
 from mnqbt.rules.smt import detect_triggers
 from mnqbt.rules.structure import structure_state
@@ -52,21 +52,24 @@ class Features:
         src = self.a1 if which == "a" else self.b1
         return self._cached(f"bars_{which}_{tf}", self.base_cfg, [], lambda: resample(src, tf))
 
-    def daily(self, cfg: dict) -> pd.DataFrame:
-        return self._cached("daily", cfg, ["rules.atr_days", "rules.mood", "rules.value_area", "sessions"],
-                            lambda: daily_table(self.a1, self.flags, cfg))
+    def daily(self, cfg: dict, which: str = "a") -> pd.DataFrame:
+        return self._cached(f"daily_{which}", cfg, ["rules.atr_days", "rules.mood", "rules.value_area", "sessions"],
+                            lambda: daily_table(self.a1 if which == "a" else self.b1, self.flags, cfg))
 
     def atr_for(self, cfg: dict, bars: pd.DataFrame, which: str = "a") -> np.ndarray:
-        if which == "a":
-            atr = self.daily(cfg)["atr"]
-        else:
-            atr = self._cached("daily_atr_b", cfg, ["rules.atr_days", "sessions"], lambda: daily_atr(self.b1, self.flags, cfg))
-        return atr.reindex(pd.DatetimeIndex(bars["tdate"].to_numpy())).to_numpy()
+        return self.daily(cfg, which)["atr"].reindex(pd.DatetimeIndex(bars["tdate"].to_numpy())).to_numpy()
 
-    def levels(self, cfg: dict, tf: str) -> pd.DataFrame:
+    def levels(self, cfg: dict, tf: str, which: str = "a") -> pd.DataFrame:
+        """Key levels at the start of each ``tf`` bar of ``which``; MES levels are put on MNQ's bars (as of each start)."""
         lv = get(cfg, "rules.levels")
-        return self._cached(f"levels_{tf}", cfg, ["rules.levels", "rules.atr_days", "rules.value_area", "sessions"],
-                            lambda: level_table(self.bars("a", tf), self.a1, self.daily(cfg), self.bars("a", lv["swing_timeframe"]), cfg))
+
+        def make():
+            q = self.bars(which, tf)
+            src = self.a1 if which == "a" else self.b1
+            lt = level_table(q, src, self.daily(cfg, which), self.bars(which, lv["swing_timeframe"]), cfg)
+            return lt if which == "a" else lt.reindex(self.bars("a", tf).index, method="ffill")
+
+        return self._cached(f"levels_{which}_{tf}", cfg, ["rules.levels", "rules.atr_days", "rules.value_area", "sessions"], make)
 
     def triggers(self, cfg: dict) -> pd.DataFrame:
         tf = get(cfg, "rules.smt.timeframe")
@@ -74,7 +77,8 @@ class Features:
         def make():
             a = self.bars("a", tf)
             b = self.bars("b", tf).reindex(a.index)
-            return detect_triggers(a, b, self.levels(cfg, tf), self.atr_for(cfg, a), self.atr_for(cfg, a, "b"), cfg)
+            levels_b = self.levels(cfg, tf, "b") if get(cfg, "rules.smt.mode") == "session" else None
+            return detect_triggers(a, b, self.levels(cfg, tf), self.atr_for(cfg, a), self.atr_for(cfg, a, "b"), cfg, levels_b)
 
         return self._cached("triggers", cfg, ["rules.smt", "rules.levels.use", "rules.levels.swing_timeframe", "rules.levels.swing_n",
                                              "rules.levels.swing_count", "rules.levels.tolerance", "rules.atr_days", "rules.value_area"], make)

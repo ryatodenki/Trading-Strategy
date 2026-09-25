@@ -2,7 +2,8 @@
 # top of config/default.yaml.  Nothing here is tuned: every variant uses the
 # default parameters, so the only thing that changes is the piece under test.
 
-# 1. Core: key level + 5m FVG + SMT, stop beyond the swept swing, 2R target.
+# 1. Core: swept key level + 5m FVG, confirmed by a session SMT OR a trending
+#    one-sided market; stop beyond the swept swing, 2R target.
 baseline: {}
 
 # 2. Add each piece alone to the baseline.
@@ -14,6 +15,13 @@ add_one:
   fvg_15m:          {rules.fvg.timeframe: 15min}
   liquidity_target: {setup.target.mode: liquidity}
 
+# 2b. Which confirmation carries the result?  Declared before any result was seen.
+confirm:
+  smt_only:        {setup.confirm: [smt]}
+  trend_only:      {setup.confirm: [trend]}
+  none:            {setup.confirm: []}
+  swing_smt_only:  {setup.confirm: [smt], rules.smt.mode: swing}   # the earlier 5m SMT, for comparison
+
 # 3. Full setup = baseline + every filter; then remove one condition at a time.
 full:
   setup.filters.mood: true
@@ -23,7 +31,7 @@ full:
 
 remove_one:             # applied on top of `full`
   no_key_level:  {setup.require.key_level: false}
-  no_smt:        {setup.require.smt: false}
+  no_confirm:    {setup.confirm: []}
   no_fvg:        {setup.require.fvg: false}
   no_mood:       {setup.filters.mood: false}
   no_structure:  {setup.filters.structure: false}

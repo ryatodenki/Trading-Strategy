@@ -97,7 +97,7 @@ def cmd_build(args, cfg):
 def _variant_cfg(cfg: dict, name: str) -> dict:
     from mnqbt.backtest.research import variant_plan
 
-    for _, n, _, c in variant_plan(cfg, ("baseline", "add_one", "full", "remove_one", "engine_checks")):
+    for _, n, _, c in variant_plan(cfg, ("baseline", "add_one", "confirm", "full", "remove_one", "engine_checks")):
         if n == name or n.lstrip("+") == name:
             return c
     raise SystemExit(f"unknown variant {name!r}")
@@ -131,7 +131,7 @@ def cmd_charts(args, cfg):
                   f"exit {pd.Timestamp(row['exit_ns'], tz='UTC').tz_convert(get(cfg, 'project.timezone')):%H:%M} ({row['exit_reason']})",
                   f"- entry {row['entry']:.2f}, stop {row['stop']:.2f}, target {row['target']:.2f}, risk {row['risk_pts']:.2f} pts, "
                   f"result {row['r_net']:+.2f}R net (${row['pnl_usd']:+.2f})",
-                  f"- key level `{row['level']}`, SMT leader {row['smt_leader'] or '—'}, vol regime {row['vol_state']}, "
+                  f"- key level `{row['level']}`, confirmed by {row['confirm']}, SMT leader {row['smt_leader'] or '—'}, vol regime {row['vol_state']}, "
                   f"VWAP side {row['vwap_side']}, value area {row['va_loc']}, structure {row['structure_aligned']}", ""]
     (out / "README.md").write_text("\n".join(lines))
     print(f"{len(pick)} example charts in {out}")
@@ -140,7 +140,7 @@ def cmd_charts(args, cfg):
 def _verdicts(results) -> dict[str, str]:
     """Rough 'does it help' call vs the reference variant (baseline for add-one, full for remove-one)."""
     by = {r.name: r for r in results}
-    ref_for = {"add_one": "baseline", "remove_one": "full", "engine_checks": "baseline", "full": "baseline"}
+    ref_for = {"add_one": "baseline", "confirm": "baseline", "remove_one": "full", "engine_checks": "baseline", "full": "baseline"}
     out = {}
     for r in results:
         ref = by.get(ref_for.get(r.group, ""))
@@ -200,7 +200,7 @@ def cmd_suite(args, cfg):
         plot_by_year(yb, out / "baseline_by_year.png", "Baseline: average net R per trade, by year")
         L += ["![baseline by year](baseline_by_year.png)", ""]
     detail_keys = ["session", "weekday", "year"]
-    all_keys = ["session", "weekday", "year", "direction", "vol regime", "key level", "SMT leader", "VWAP side", "value area",
+    all_keys = ["session", "weekday", "year", "direction", "vol regime", "key level", "confirmation", "SMT leader", "VWAP side", "value area",
                 "structure", "news day", "target"]
     for r in results:
         L += [f"## {r.name}", ""]

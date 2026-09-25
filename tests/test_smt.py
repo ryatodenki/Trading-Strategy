@@ -26,7 +26,7 @@ A_HIGHS = [10, 11, 12, 20, 13, 12, 13, 14, 15, 22, 16, 14, 13]
 
 
 def _run(a_highs, b_highs, cfg, atr_b=50.0, **lv):
-    cfg = apply_overrides(cfg, {"rules.smt.swing_n": 2, "rules.smt.align_window_bars": 1, "rules.smt.min_separation_bars": 3,
+    cfg = apply_overrides(cfg, {"rules.smt.mode": "swing", "rules.smt.swing_n": 2, "rules.smt.align_window_bars": 1, "rules.smt.min_separation_bars": 3,
                                 "rules.smt.lookback_bars": 24, "rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
     a, b = _bars(a_highs), _bars(b_highs)
     t = detect_triggers(a, b, _levels(a, **lv), np.full(len(a), 50.0), np.full(len(a), atr_b), cfg)
@@ -67,7 +67,7 @@ def test_bullish_smt_on_lows(cfg):
     lows = np.array([20, 19, 18, 10, 17, 18, 17, 16, 15, 8, 14, 16, 17], float)
     b_lows = lows.copy()
     b_lows[9] = 11  # MES higher low
-    cfg2 = apply_overrides(cfg, {"rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
+    cfg2 = apply_overrides(cfg, {"rules.smt.mode": "swing", "rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
     a, b = _bars(lows + 3, lows), _bars(b_lows + 3, b_lows)
     t = detect_triggers(a, b, _levels(a), np.full(len(a), 50.0), np.full(len(a), 50.0), cfg2)
     r = t[(t["dir"] == 1) & (t["pos"] == 9)].iloc[0]
@@ -129,3 +129,39 @@ def test_level_must_exist_before_the_smts_first_swing(cfg):
     # a level that already existed (prior-day high 20.25) still counts
     _, t = _run(a_highs, b_highs, cfg, dh=dh, pdh=20.25)
     assert bool(t.iloc[0]["sweep_core"]) and t.iloc[0]["sweep_level_core"] == "pdh"
+
+
+def _run_session(b_highs, cfg, lv_a, lv_b):
+    """Session SMT at MNQ's swing high at bar 9 (high 22); tolerance 1 pt, min size 0.5 pt."""
+    cfg = apply_overrides(cfg, {"rules.smt.mode": "session", "rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
+    a, b = _bars(A_HIGHS), _bars(b_highs)
+    atr = np.full(len(a), 50.0)
+    t = detect_triggers(a, b, _levels(a, **lv_a), atr, atr, cfg, levels_b=_levels(b, **lv_b))
+    return t[(t["dir"] == -1) & (t["pos"] == 9)].iloc[0]
+
+
+# MES highs around MNQ's swing (bars 8-10) top out at 19 / 21
+B_BELOW = [10, 11, 12, 20, 13, 12, 13, 14, 15, 19, 16, 14, 13]
+B_ABOVE = [10, 11, 12, 20, 13, 12, 13, 14, 15, 21, 16, 14, 13]
+
+
+def test_session_smt_mnq_takes_london_high_mes_does_not(cfg):
+    r = _run_session(B_BELOW, cfg, {"london_h": 21.5}, {"london_h": 20.0})
+    assert bool(r["smt"]) and r["smt_leader"] == "MNQ" and r["smt_level"] == "london_h"
+    assert (r["smt_level_a"], r["smt_level_b"]) == (21.5, 20.0)
+
+
+def test_no_session_smt_when_both_take_their_level(cfg):
+    assert not bool(_run_session(B_ABOVE, cfg, {"london_h": 21.5}, {"london_h": 20.0})["smt"])
+
+
+def test_session_smt_mes_takes_its_level_mnq_stops_short(cfg):
+    r = _run_session(B_ABOVE, cfg, {"london_h": 22.5}, {"london_h": 20.0})   # MNQ 0.5 short of its London high
+    assert bool(r["smt"]) and r["smt_leader"] == "MES"
+    # MNQ 2 pts short is not "at" its level (tolerance 1): no SMT
+    assert not bool(_run_session(B_ABOVE, cfg, {"london_h": 24.0}, {"london_h": 20.0})["smt"])
+
+
+def test_session_smt_needs_minimum_size(cfg):
+    # MNQ takes its level by only 1 tick (< 0.5 pt minimum)
+    assert not bool(_run_session(B_BELOW, cfg, {"london_h": 21.75}, {"london_h": 20.0})["smt"])
