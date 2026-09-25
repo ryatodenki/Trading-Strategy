@@ -204,4 +204,9 @@ def report(res: Results, cfg: dict, reps: int, boot: int, commit: str = "") -> s
         for reg, g in t.groupby("vol_state"):
             L.append(f"| {n} | {reg or '—'} | {len(g):,} | {g['r_net'].mean():+.3f} | {100 * (g['r_net'] > 0).mean():.1f} |")
     L.append("")
+    L += ["## Notes", "",
+          "- `overnight` is long on every eligible day, so moving its trades to random days changes almost nothing and "
+          "p (random) cannot show anything; its p (edge) is the test that counts.",
+          "- Average R and net $ can disagree in sign. R weights every trade equally; $ weights each by its stop size, "
+          "which grew with the index from 2010 to 2022. The tests use R, as declared.", ""]
     return "\n".join(L)

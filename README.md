@@ -15,6 +15,7 @@ VWAP and value area.
 | Step 2 — backtest engine (fills, costs, no lookahead) | built and tested |
 | Step 3 — baseline, add-one, remove-one variants | **run on real data (2010–2022): every variant loses about 0.15–0.2R per trade after costs; the baseline does no better than random entries (p = 0.73)** → [results/real/step3_variants.md](results/real/step3_variants.md) |
 | Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; not run on real data (nothing to tune yet); **holdout untouched** |
+| Published-strategy candidates ([STRATEGIES.md](STRATEGIES.md)) | **15 declared strategies run once on 2010–2022: none qualifies as a finalist**; holdout untouched → [results/real/strategies_dev.md](results/real/strategies_dev.md) |
 
 Everything under `results/synthetic/` comes from a **random walk**. It proves the
 pipeline runs and has no lookahead: a random walk shows no edge, and it
