@@ -159,6 +159,34 @@ def _verdicts(results) -> dict[str, str]:
     return out
 
 
+def cmd_strategies(args, cfg):
+    """STRATEGIES.md candidates on the development period only (no option to reach the holdout)."""
+    import subprocess
+
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.run import load_dev, report, run_all
+
+    F, mk = load_dev(cfg, args.dataset)
+    names = args.only.split(",") if args.only else None
+    res = run_all(cfg, F, mk, names=names, reps=args.reps, boot=args.boot, jobs=args.jobs)
+    try:
+        h = subprocess.run(["git", "log", "-1", "--format=%h", "--", "STRATEGIES.md"], capture_output=True, text=True,
+                           cwd=Path(__file__).resolve().parents[1]).stdout.strip()
+    except OSError:
+        h = ""
+    out = _out(cfg, args.dataset) / ("strategies_dev.md" if names is None else "strategies_dev_subset.md")
+    rp.write(out, report(res, cfg, args.reps, args.boot, f" (last change to it: commit {h})" if h else ""))
+    trade_dir = scratch_dir(cfg) / args.dataset / "strategies"   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for n, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time")], errors="ignore").to_parquet(trade_dir / f"{n}.parquet")
+    for s in res.strategies:
+        m = res.stats[s.name]
+        print(f"{s.name:20s} trades {m.get('trades', 0):6d}  avg R net {m.get('avg_r_net', float('nan')):+.3f}  "
+              f"Holm p(edge) {m.get('holm_edge', float('nan')):.4f}  Holm p(random) {m.get('holm_random', float('nan')):.4f}")
+    print(f"finalists: {res.finalists or 'none'}\nreport: {out}")
+
+
 def cmd_suite(args, cfg):
     from mnqbt.backtest.research import load_features, period_bounds, run_suite
     from mnqbt.reports import report as rp
@@ -350,6 +378,14 @@ def main(argv=None):
     p.add_argument("--n", type=int, default=9)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_charts)
+
+    p = sub.add_parser("strategies", help="STRATEGIES.md candidates, development period only")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--only", default=None, help="comma-separated strategy names (default: all)")
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs")
+    p.add_argument("--boot", type=int, default=10000, help="bootstrap resamples for p (edge)")
+    p.add_argument("--jobs", type=int, default=4)
+    p.set_defaults(fn=cmd_strategies)
 
     p = sub.add_parser("suite", help="Step 3: baseline, add-one, full, remove-one")
     p.add_argument("--dataset", default="real")

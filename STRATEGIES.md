@@ -32,6 +32,14 @@ Every rule and parameter below is fixed here. Nothing is tuned afterwards.
   - With a stop: 1R = the entry-to-stop distance.
   - Without a stop, none is added, because the published rules have none. 1R = one daily ATR at entry, a volatility unit and not a loss limit. p-values, t-statistics and profit factors do not depend on this choice.
 - **Positions.** One position at a time per strategy. Strategies are independent of each other.
+- **Period.** Every trade must open and close inside the development period; bars after 2022-12-31 are not even loaded.
+
+### Amendments made while implementing, before any run on real data
+
+1. **Gaps (#7, #8):** the gap uses the 09:30 open, so the order goes in at **09:31**, the first moment the open is known. As first written, the gap was measured on the open and the entry was at that same open, which cannot be done.
+2. **Exchange calendar:** month ends (#12–14) and pre-holiday days (#15) come from the exchange calendar, not from which days the data contains. A harness bug that treated the Friday before a Saturday New Year's Day as a closure (2010-12-31, 2021-12-31) was fixed; the exchange was open both days.
+3. **Monthly entries on non-tradeable days:** a monthly or calendar entry whose day is not tradeable (e.g. a half-day month end) is skipped, like any other entry.
+4. **`vwap_regime` R:** its R is one ATR for the trend trades and the stop distance for the reversion trades.
 
 ## The candidates
 
@@ -102,7 +110,7 @@ Baltussen, G., Da, Z., Lammers, S. & Martens, M. (2021), *Hedging demand and mar
 No canonical published rule for index futures, so this is the plainest one, with no free parameter.
 
 - **Gap** = the open − the previous trading day's 15:59 close. Skipped if there is no such bar.
-- **Gap up:** short at the open.
+- **Gap up:** short at 09:31 (amendment 1).
   - Target: the previous close (gap filled).
   - Stop: the open + the gap, so the stop is as far as the target.
 - **Gap down:** the mirror image.
@@ -113,7 +121,7 @@ No canonical published rule for index futures, so this is the plainest one, with
 
 No canonical published rule; plainest rule.
 
-- **Entry:** long at the open after a gap up, short after a gap down. The gap is as in #7.
+- **Entry:** at 09:31 (amendment 1): long after a gap up, short after a gap down. The gap is as in #7.
 - **Stop:** the previous close (gap fully filled).
 - **Exit:** at the close. No target.
 - R = the gap. Skipped when the gap is below the minimum risk.

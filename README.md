@@ -121,6 +121,7 @@ python -m mnqbt charts --dataset real --variant baseline --n 9   # Step 1: check
 python -m mnqbt suite --dataset real                              # Step 3 (development period only)
 python -m mnqbt walkforward --dataset real                        # Step 4 (development period only)
 python -m mnqbt holdout --dataset real --variant baseline --note "final"   # Step 4: ONE look at recent data
+python -m mnqbt strategies --dataset real                         # STRATEGIES.md candidates, development period only
 ```
 
 Variant definitions live in [config/variants.yaml](config/variants.yaml). Every
@@ -165,7 +166,8 @@ config/            default.yaml (all parameters), variants.yaml (Step 3), news_d
 mnqbt/data/        databento_fetch, importers, continuous (rolls), sessions, calendar, validate, build, synthetic
 mnqbt/rules/       bars, swings, structure, levels, fvg, smt, mood, vwap, profile, news, features, setups
 mnqbt/backtest/    engine (fills/costs), research (variants, grid, walk-forward, holdout), random_bench
-mnqbt/reports/     metrics (stats, bootstrap CIs, breakdowns), charts, report (markdown)
+mnqbt/reports/     metrics (stats, bootstrap CIs, multiple-testing corrections, breakdowns), charts, report (markdown)
+mnqbt/strategies/  published-research candidates (STRATEGIES.md): rules, random-entry benchmark, runner
 tests/             FVG, swings/structure, sessions/levels, SMT, fills, rolls, profile/VWAP, no-lookahead
 results/           committed reports (synthetic demo now; real data later)
 ```
