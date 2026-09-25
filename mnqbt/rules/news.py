@@ -1,4 +1,4 @@
-"""Major-news day calendar (FOMC, NFP; add CPI or anything else to the CSV).
+"""Major-news day calendar (FOMC, NFP, CPI; add anything else to the CSV).
 
 ``config/news_days.csv`` columns: date, kind, time_et, source.
 * FOMC: statement days compiled from the Federal Reserve's published meeting
@@ -8,6 +8,8 @@
   containing the 12th of the reference month, with the January and July-4
   holiday adjustments), plus overrides for shutdown-delayed releases.
   Approximate — edit the CSV if you have the official schedule.
+* CPI: release dates from the BLS schedules (bls.gov/schedule/<year>), 08:30 ET,
+  including the shutdown-delayed releases (2013-10-30, 2025-10-24; no November 2025 release).
 """
 
 from __future__ import annotations

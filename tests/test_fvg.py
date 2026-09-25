@@ -64,3 +64,13 @@ def test_entry_price_fraction_and_tick_rounding():
     # 101.75..103 midpoint 102.375 -> rounded one tick deeper into the zone for a long (102.25)
     assert entry_price(top, bottom, d, 0.0, 0.25).tolist() == [103.0, 103.0, 105.0]
     assert entry_price(top, bottom, d, 1.0, 0.25).tolist() == [101.0, 101.75, 108.0]
+
+
+def test_same_direction_needs_three_candles_closing_the_gaps_way():
+    from mnqbt.rules.fvg import detect_fvgs
+    from tests.conftest import bars_from_ohlc
+    up = [(100, 102, 99, 101.5), (101.5, 106, 101, 105.5), (105.5, 108, 104, 107.5)]   # gap 102 -> 104, three up candles
+    assert len(detect_fvgs(bars_from_ohlc(up), "5min", 1.0, 12, same_direction=True)) == 1
+    mixed = up[:2] + [(107.5, 108, 104, 105)]                                           # third candle closes down
+    assert len(detect_fvgs(bars_from_ohlc(mixed), "5min", 1.0, 12)) == 1
+    assert len(detect_fvgs(bars_from_ohlc(mixed), "5min", 1.0, 12, same_direction=True)) == 0

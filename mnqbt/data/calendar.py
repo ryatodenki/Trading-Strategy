@@ -104,7 +104,7 @@ def us_holidays(start_year: int, end_year: int) -> pd.DataFrame:
     rows = []
     for y in range(start_year, end_year + 1):
         rows += [
-            (_observed(dt.date(y, 1, 1)), "New Year's Day"),
+            # a Saturday New Year's Day is not made up on the Friday before (that Friday closes the year)
             (_nth_weekday(y, 1, 0, 3), "MLK Day"),
             (_nth_weekday(y, 2, 0, 3), "Presidents Day"),
             (_easter(y) - dt.timedelta(days=2), "Good Friday"),
@@ -115,6 +115,8 @@ def us_holidays(start_year: int, end_year: int) -> pd.DataFrame:
             (_nth_weekday(y, 11, 3, 4) + dt.timedelta(days=1), "Day after Thanksgiving (early close)"),
             (_observed(dt.date(y, 12, 25)), "Christmas"),
         ]
+        if dt.date(y, 1, 1).weekday() != 5:
+            rows.append((_observed(dt.date(y, 1, 1)), "New Year's Day"))
         if y >= 2022:
             rows.append((_observed(dt.date(y, 6, 19)), "Juneteenth"))
     special = [

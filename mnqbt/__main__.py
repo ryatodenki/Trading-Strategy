@@ -97,7 +97,7 @@ def cmd_build(args, cfg):
 def _variant_cfg(cfg: dict, name: str) -> dict:
     from mnqbt.backtest.research import variant_plan
 
-    for _, n, _, c in variant_plan(cfg, ("baseline", "add_one", "full", "remove_one", "engine_checks")):
+    for _, n, _, c in variant_plan(cfg, ("baseline", "add_one", "confirm", "full", "remove_one", "engine_checks")):
         if n == name or n.lstrip("+") == name:
             return c
     raise SystemExit(f"unknown variant {name!r}")
@@ -131,7 +131,7 @@ def cmd_charts(args, cfg):
                   f"exit {pd.Timestamp(row['exit_ns'], tz='UTC').tz_convert(get(cfg, 'project.timezone')):%H:%M} ({row['exit_reason']})",
                   f"- entry {row['entry']:.2f}, stop {row['stop']:.2f}, target {row['target']:.2f}, risk {row['risk_pts']:.2f} pts, "
                   f"result {row['r_net']:+.2f}R net (${row['pnl_usd']:+.2f})",
-                  f"- key level `{row['level']}`, SMT leader {row['smt_leader'] or '—'}, vol regime {row['vol_state']}, "
+                  f"- key level `{row['level']}`, confirmed by {row['confirm']}, SMT leader {row['smt_leader'] or '—'}, vol regime {row['vol_state']}, "
                   f"VWAP side {row['vwap_side']}, value area {row['va_loc']}, structure {row['structure_aligned']}", ""]
     (out / "README.md").write_text("\n".join(lines))
     print(f"{len(pick)} example charts in {out}")
@@ -140,7 +140,7 @@ def cmd_charts(args, cfg):
 def _verdicts(results) -> dict[str, str]:
     """Rough 'does it help' call vs the reference variant (baseline for add-one, full for remove-one)."""
     by = {r.name: r for r in results}
-    ref_for = {"add_one": "baseline", "remove_one": "full", "engine_checks": "baseline", "full": "baseline"}
+    ref_for = {"add_one": "baseline", "confirm": "baseline", "remove_one": "full", "engine_checks": "baseline", "full": "baseline"}
     out = {}
     for r in results:
         ref = by.get(ref_for.get(r.group, ""))
@@ -157,6 +157,143 @@ def _verdicts(results) -> dict[str, str]:
                 word = "worse"
         out[r.name] = f"{diff:+.3f}R vs {ref.name} (±{2 * se:.3f}) → {word}"
     return out
+
+
+def cmd_strategies(args, cfg):
+    """STRATEGIES.md candidates on the development period only (no option to reach the holdout)."""
+    import subprocess
+
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.run import load_dev, report, run_all
+
+    F, mk = load_dev(cfg, args.dataset)
+    names = args.only.split(",") if args.only else None
+    res = run_all(cfg, F, mk, names=names, reps=args.reps, boot=args.boot, jobs=args.jobs)
+    try:
+        h = subprocess.run(["git", "log", "-1", "--format=%h", "--", "STRATEGIES.md"], capture_output=True, text=True,
+                           cwd=Path(__file__).resolve().parents[1]).stdout.strip()
+    except OSError:
+        h = ""
+    out = _out(cfg, args.dataset) / ("strategies_dev.md" if names is None else "strategies_dev_subset.md")
+    rp.write(out, report(res, cfg, args.reps, args.boot, f" (last change to it: commit {h})" if h else ""))
+    trade_dir = scratch_dir(cfg) / args.dataset / "strategies"   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for n, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time")], errors="ignore").to_parquet(trade_dir / f"{n}.parquet")
+    for s in res.strategies:
+        m = res.stats[s.name]
+        print(f"{s.name:20s} trades {m.get('trades', 0):6d}  avg R net {m.get('avg_r_net', float('nan')):+.3f}  "
+              f"Holm p(edge) {m.get('holm_edge', float('nan')):.4f}  Holm p(random) {m.get('holm_random', float('nan')):.4f}")
+    print(f"finalists: {res.finalists or 'none'}\nreport: {out}")
+
+
+def cmd_patterns(args, cfg):
+    """PATTERNS.md pattern search, one stage at a time; every test is logged."""
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.explore import log_report, out_dir, run_stage, stage_report
+
+    res = run_stage(cfg, args.dataset, args.stage, reps=args.reps, unlock_final=args.unlock_final)
+    d = out_dir(cfg, args.dataset)
+    rp.write(d / f"{args.stage}.md", stage_report(res))
+    rp.write(d / "README.md", log_report(cfg, args.dataset))
+    trade_dir = scratch_dir(cfg) / args.dataset / "patterns" / args.stage   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for h, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time")], errors="ignore").to_parquet(trade_dir / f"{h}.parquet")
+    if res.note:
+        print(res.note)
+    for r in res.rows:
+        eff = r.get("avg_r_net") if r["kind"] == "rule" else r.get("delta")
+        print(f"{r['hypothesis']:3s} {r['instrument']} {r['split']:8s} trades {r['trades']:6d}  effect {eff:+.3f}  "
+              f"p {r['p']:.4f}  adj {r.get('p_adj', float('nan')):.4f}  {'PASS' if r['passed'] else 'fail'}")
+    print(f"report: {d / (args.stage + '.md')}")
+
+
+def cmd_gex_download(args, cfg):
+    """Fetch SqueezeMetrics' daily GEX CSV once (GAMMA.md).  Only run after the source was approved."""
+    from mnqbt.data.gex import GEX_URL, download_gex, load_gex
+
+    p = download_gex(cfg, force=args.force)
+    g = load_gex(cfg)
+    print(f"saved {GEX_URL} -> {p} ({p.stat().st_size:,} bytes, {len(g):,} dates, {g.index.min().date()} .. {g.index.max().date()})")
+
+
+def cmd_gamma(args, cfg):
+    """GAMMA.md study, one stage at a time; every test is logged in the pattern-search log."""
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.explore import log_report, out_dir
+    from mnqbt.strategies.gamma_run import gamma_dir, run_stage, stage_report
+
+    res = run_stage(cfg, args.dataset, args.stage, reps=args.reps, unlock_final=args.unlock_final)
+    d = gamma_dir(cfg, args.dataset)
+    rp.write(d / f"{args.stage}.md", stage_report(res))
+    rp.write(out_dir(cfg, args.dataset) / "README.md", log_report(cfg, args.dataset))
+    trade_dir = scratch_dir(cfg) / args.dataset / "gamma" / args.stage   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for h, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time") or c in ("trail_ns", "trail_px")], errors="ignore").to_parquet(
+            trade_dir / f"{h}.parquet")
+    if res.note:
+        print(res.note)
+    for r in res.rows:
+        eff = r.get("avg_r_net") if r["kind"] == "main" else r.get("delta")
+        print(f"{r['hypothesis']:3s} {r['kind']:8s} {r['instrument']} {r['split']:8s} trades {r['trades']:6d}  "
+              f"effect {(eff if eff is not None else float('nan')):+.3f}  p {r['p']:.4f}  adj {r.get('p_adj', float('nan')):.4f}  "
+              f"{'PASS' if r['passed'] else 'fail'}")
+    print(f"report: {d / (args.stage + '.md')}")
+
+
+def cmd_gamma_charts(args, cfg):
+    """Charts of G5 (your breakout setup) trades from the explore split only: per regime the best, the worst and
+    ``--random`` random trades (fixed seed), plus the cumulative result."""
+    from mnqbt.backtest.engine import simulate
+    from mnqbt.data.gex import load_gex
+    from mnqbt.reports.gamma_charts import plot_g5_equity, plot_g5_trade
+    from mnqbt.strategies.explore import SPLITS
+    from mnqbt.strategies.gamma import BY_ID, _G5Inputs
+    from mnqbt.strategies.gamma_run import gamma_dir, load_gamma_world
+
+    gw = load_gamma_world(cfg, args.dataset, "MNQ", "explore")
+    w, h = gw.w, BY_ID["G5"]
+    it = h.build(w.ctx, gw.regime)
+    it = it[(it["tdate"] >= w.start) & (it["tdate"] <= w.end) & (it["flatten_ns"] <= w.mk.ts[-1])].reset_index(drop=True)
+    tr = simulate(w.mk, it, w.st)[0]
+    tr = tr[tr["regime"].notna()].reset_index(drop=True)
+    gex = load_gex(cfg, end=SPLITS["explore"][1])
+    out = gamma_dir(cfg, args.dataset) / "examples"
+    rng = np.random.default_rng(args.seed)
+    picks = []
+    for g in (1, -1):
+        sub = tr[tr["regime"] == g]
+        best, worst = sub["r_net"].idxmax(), sub["r_net"].idxmin()
+        rest = sub.index.difference([best, worst]).to_numpy()
+        rand = rng.choice(rest, size=min(args.random, len(rest)), replace=False)
+        picks += [(best, "best"), (worst, "worst")] + [(int(k), "random") for k in sorted(rand)]
+    G = _G5Inputs(w.ctx)
+    rows = []
+    for n, (k, why) in enumerate(picks, 1):
+        t = tr.loc[k]
+        day = pd.Timestamp(t["tdate"])
+        gval = float(gex[gex.index < day].iloc[-1])
+        f = plot_g5_trade(w.ctx, G, it.loc[int(t["intent"])], t, gval, out / f"g5_{n:02d}.png")
+        rows.append(f"| [{f.name}]({f.name}) | {why} | {'positive' if t['regime'] > 0 else 'negative'} | {day.date()} | "
+                    f"{'long' if t['dir'] > 0 else 'short'} | {it.loc[int(t['intent']), 'fvg_tf']} | {t['exit_reason']} | {t['r_net']:+.2f} |")
+    first, last = (pd.Timestamp(x).date() for x in (tr["tdate"].min(), tr["tdate"].max()))
+    plot_g5_equity(tr, out / "g5_cumulative.png", f"G5, your breakout setup: all {len(tr)} explore trades "
+                   f"({first} → {last}), cumulative R")
+    readme = ["# G5 example trades (explore split only)", "",
+              "Your breakout setup as pre-registered in [GAMMA.md](../../../../GAMMA.md), on MNQ explore data (NQ prices, "
+              "back-adjusted, before MNQ existed). Validate and final-test dates are not loaded.", "",
+              f"Chosen by rule, not by eye: for each gamma regime the best trade, the worst trade and {args.random} random "
+              f"trades (seed {args.seed}). Of all {len(tr)} explore trades, {int((tr['r_net'] > 0).sum())} made money after costs.",
+              "", "![cumulative R](g5_cumulative.png)", "",
+              "| chart | picked as | gamma | date | side | FVG | exit | R net |", "|---|---|---|---|---|---|---|---:|", *rows, "",
+              "How to read a chart: violet triangles are the two latest 5m swing highs / lows when the FVG started (HH/HL "
+              "for longs, LH/LL for shorts); the dashed violet line is the key level the FVG's candles broke; the shaded "
+              "band is the FVG; blue = limit entry (triangle = fill), red = stop (a step line when it trails), green = "
+              "target, orange = VWAP, X = exit.", ""]
+    (out / "README.md").write_text("\n".join(readme))
+    print(f"{len(picks)} trade charts + cumulative chart -> {out}")
 
 
 def cmd_suite(args, cfg):
@@ -200,7 +337,7 @@ def cmd_suite(args, cfg):
         plot_by_year(yb, out / "baseline_by_year.png", "Baseline: average net R per trade, by year")
         L += ["![baseline by year](baseline_by_year.png)", ""]
     detail_keys = ["session", "weekday", "year"]
-    all_keys = ["session", "weekday", "year", "direction", "vol regime", "key level", "SMT leader", "VWAP side", "value area",
+    all_keys = ["session", "weekday", "year", "direction", "vol regime", "key level", "confirmation", "SMT leader", "VWAP side", "value area",
                 "structure", "news day", "target"]
     for r in results:
         L += [f"## {r.name}", ""]
@@ -350,6 +487,39 @@ def main(argv=None):
     p.add_argument("--n", type=int, default=9)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=cmd_charts)
+
+    p = sub.add_parser("patterns", help="PATTERNS.md pattern search: explore -> validate -> mes -> final")
+    p.add_argument("--stage", required=True, choices=["explore", "validate", "mes", "final"])
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
+    p.add_argument("--unlock-final", action="store_true", help="required for --stage final; only when told to")
+    p.set_defaults(fn=cmd_patterns)
+
+    p = sub.add_parser("gex-download", help="fetch SqueezeMetrics' free daily GEX CSV once (GAMMA.md)")
+    p.add_argument("--force", action="store_true", help="fetch again even if the file exists")
+    p.set_defaults(fn=cmd_gex_download)
+
+    p = sub.add_parser("gamma", help="GAMMA.md gamma-regime study: explore -> validate -> mes -> final")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--stage", choices=["explore", "validate", "mes", "final", "mnq"], required=True,
+                   help="mnq = round 2: MNQ 2019-07-01 .. 2022-12-30 (GAMMA.md)")
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
+    p.add_argument("--unlock-final", action="store_true", help="allow the final test (only when told to)")
+    p.set_defaults(fn=cmd_gamma)
+
+    p = sub.add_parser("gamma-charts", help="charts of G5 (breakout setup) trades from the explore split")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--random", type=int, default=2, help="random trades per gamma regime, besides the best and worst")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_gamma_charts)
+
+    p = sub.add_parser("strategies", help="STRATEGIES.md candidates, development period only")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--only", default=None, help="comma-separated strategy names (default: all)")
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs")
+    p.add_argument("--boot", type=int, default=10000, help="bootstrap resamples for p (edge)")
+    p.add_argument("--jobs", type=int, default=4)
+    p.set_defaults(fn=cmd_strategies)
 
     p = sub.add_parser("suite", help="Step 3: baseline, add-one, full, remove-one")
     p.add_argument("--dataset", default="real")

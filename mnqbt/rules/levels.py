@@ -29,8 +29,8 @@ from mnqbt.timeutil import ns
 SESSION_NAMES = ("asia", "london", "ny")
 
 
-def daily_table(m1: pd.DataFrame, flags: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """One row per trading date: OHLC, TR, full-day flag, ATR, prior-day levels, vol regime, prior VA."""
+def _daily_bars(m1: pd.DataFrame, flags: pd.DataFrame) -> pd.DataFrame:
+    """One row per trading date: OHLC, true range, full-day and tradeable flags."""
     g = m1.groupby("tdate", sort=True)
     d = pd.DataFrame(
         {"open": g["open"].first(), "high": g["high"].max(), "low": g["low"].min(), "close": g["close"].last(), "n_bars": g.size()}
@@ -41,21 +41,35 @@ def daily_table(m1: pd.DataFrame, flags: pd.DataFrame, cfg: dict) -> pd.DataFram
     fl = flags.reindex(d.index)
     d["full"] = ~fl["short"].fillna(True).astype(bool)
     d["tradeable"] = fl["tradeable"].fillna(False).astype(bool) if "tradeable" in fl else d["full"]
+    return d
 
-    # Everything "prior" is looked up at the most recent FULL day strictly before d,
-    # so short/holiday sessions never become the reference day and nothing from d is used.
+
+def _prior_full(d: pd.DataFrame, values_on_full_days: np.ndarray) -> np.ndarray:
+    """Value at the most recent FULL day strictly before each day of ``d``.
+
+    So short/holiday sessions never become the reference day and nothing from
+    the day itself is used.
+    """
+    prev_full_pos = np.searchsorted(d.index[d["full"]].values, d.index.values, side="left") - 1
+    if len(values_on_full_days) == 0:
+        return np.full(len(d), np.nan)
+    return np.where(prev_full_pos >= 0, values_on_full_days[np.maximum(prev_full_pos, 0)], np.nan)
+
+
+def _atr(d: pd.DataFrame, cfg: dict) -> np.ndarray:
+    n_atr = int(get(cfg, "rules.atr_days"))
+    return _prior_full(d, d.loc[d["full"], "tr"].rolling(n_atr, min_periods=n_atr).mean().to_numpy())
+
+
+def daily_table(m1: pd.DataFrame, flags: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """One row per trading date: OHLC, TR, full-day flag, ATR, prior-day levels, vol regime, prior VA."""
+    d = _daily_bars(m1, flags)
     full = d[d["full"]]
-    prev_full_pos = np.searchsorted(full.index.values, d.index.values, side="left") - 1
-    has_prev = prev_full_pos >= 0
-    pos = np.maximum(prev_full_pos, 0)
 
     def prior(values_on_full_days: np.ndarray) -> np.ndarray:
-        if len(values_on_full_days) == 0:
-            return np.full(len(d), np.nan)
-        return np.where(has_prev, values_on_full_days[pos], np.nan)
+        return _prior_full(d, values_on_full_days)
 
-    n_atr = int(get(cfg, "rules.atr_days"))
-    d["atr"] = prior(full["tr"].rolling(n_atr, min_periods=n_atr).mean().to_numpy())
+    d["atr"] = _atr(d, cfg)
     d["pdh"] = prior(full["high"].to_numpy())
     d["pdl"] = prior(full["low"].to_numpy())
 

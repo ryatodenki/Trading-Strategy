@@ -3,7 +3,9 @@
 Three consecutive bars c1, c2, c3 (same trading day, no missing bin between):
 * Bullish FVG if low(c3) > high(c1): zone [high(c1), low(c3)]
 * Bearish FVG if high(c3) < low(c1): zone [high(c3), low(c1)]
-Size = top - bottom must be >= min_size (points / ATR fraction).  The FVG is
+Size = top - bottom must be >= min_size (points / ATR fraction).
+With ``same_direction``, all three candles must close the same way as the gap
+(bullish: close > open for c1, c2 and c3; bearish: close < open for all three).  The FVG is
 known at the close of c3 and stays usable for ``max_age_bars`` bars after
 that (``expire_ns``).
 """
@@ -17,10 +19,12 @@ from mnqbt.rules.bars import tf_minutes
 from mnqbt.timeutil import NS_PER_MIN
 
 
-def detect_fvgs(bars: pd.DataFrame, tf: str, min_size: np.ndarray | float, max_age_bars: int) -> pd.DataFrame:
+def detect_fvgs(bars: pd.DataFrame, tf: str, min_size: np.ndarray | float, max_age_bars: int,
+                same_direction: bool = False) -> pd.DataFrame:
     width = tf_minutes(tf) * NS_PER_MIN
     h = bars["high"].to_numpy(float)
     l = bars["low"].to_numpy(float)
+    body = np.sign(bars["close"].to_numpy(float) - bars["open"].to_numpy(float))
     start = bars["start_ns"].to_numpy()
     td = bars["tdate"].to_numpy()
     min_size = np.broadcast_to(np.asarray(min_size, float), h.shape)
@@ -34,6 +38,8 @@ def detect_fvgs(bars: pd.DataFrame, tf: str, min_size: np.ndarray | float, max_a
         size = top - bottom
         with np.errstate(invalid="ignore"):
             ok = contiguous & (size > 0) & (size >= min_size[k])
+        if same_direction:
+            ok &= (body[k - 2] == direction) & (body[k - 1] == direction) & (body[k] == direction)
         kk = k[ok]
         rows.append(
             pd.DataFrame(

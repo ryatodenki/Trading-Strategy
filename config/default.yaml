@@ -127,20 +127,30 @@ rules:
     swing_count: 3             # most recent confirmed swing highs / lows kept as levels
     # near : the swing extreme is within `tolerance` of a level (either side)
     # sweep: the swing extreme traded THROUGH a level by at least 1 tick and at most `tolerance`
-    mode: near
+    mode: sweep
     tolerance: {points: 3.0, atr_frac: 0.03}
 
   fvg:
     timeframe: 5min            # 5min | 15min
-    min_size: {points: 1.0, atr_frac: 0.01}
+    min_size: {points: 1.0, atr_frac: 0.03}   # medium and big gaps only (~the largest third)
+    same_direction: true       # all three candles close the gap's way (3 up candles / 3 down candles)
     max_age_bars: 12           # FVG usable for this many bars of its timeframe
 
   smt:
+    # session: SMT at a level both indices share (prior-day / Asia / London / NY
+    #   high or low): one index takes its level, the other does not, e.g. MNQ
+    #   takes the London high in NY while MES stays below its London high.
+    # swing: the older 5m version (two 5m swings 15 min - 2 h apart).
+    mode: session
+    levels: [prior_day, sessions]   # session mode: which shared levels count
     timeframe: 5min
     swing_n: 2                 # swing points on both MNQ and MES
     lookback_bars: 24          # previous swing must be within this many bars
     min_separation_bars: 3     # ...and at least this far back
     align_window_bars: 1       # "same swing" on the other index = within +-1 bar (<= swing_n)
+    # the index that makes the higher high / lower low must beat its previous
+    # swing by at least this, in its OWN points and daily ATR (2 ticks ~ 1% ATR)
+    min_size: {points: 0.5, atr_frac: 0.01}
 
   vwap:
     anchor: trading_day        # trading_day (18:00) | session (resets at asia/london/ny start)
@@ -156,7 +166,7 @@ rules:
 
   news:
     file: config/news_days.csv
-    kinds: [FOMC, NFP]         # add CPI etc. to the CSV and list them here
+    kinds: [FOMC, NFP, CPI]    # add more kinds to the CSV and list them here
     mode: day                  # day: no entries all day | window: +-window_minutes around release
     window_minutes: 30
 
@@ -167,8 +177,13 @@ setup:
   # Core conditions (Step 3 "remove one at a time" switches these off)
   require:
     key_level: true
-    smt: true
     fvg: true
+  # ...and at least ONE of these confirmations ([] = no confirmation needed):
+  #   smt:   SMT with MES (rules.smt)
+  #   trend: trending, clearly one-sided market in the trade direction: 1h
+  #          structure agrees, not choppy (rules.mood chop) and the entry is on
+  #          the trend side of VWAP
+  confirm: [smt, trend]
   # Optional pieces (Step 3 "add one at a time" switches these on)
   filters:
     mood: false
