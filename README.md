@@ -17,7 +17,7 @@ VWAP and value area.
 | Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; not run on real data (nothing to tune yet); **holdout untouched** |
 | Published-strategy candidates ([STRATEGIES.md](STRATEGIES.md)) | **15 declared strategies run once on 2010–2022: none qualifies as a finalist**; holdout untouched → [results/real/strategies_dev.md](results/real/strategies_dev.md) |
 | Pattern search ([PATTERNS.md](PATTERNS.md)): explore / validate / final split | **9 hypotheses on explore (2010-06 → 2018-08): nothing passed**; validate and final test unused → [results/real/patterns/](results/real/patterns/README.md) |
-| Gamma regime study ([GAMMA.md](GAMMA.md)): SqueezeMetrics GEX as a regime switch, same splits | pre-registered, built and tested on synthetic data; **not run: the GEX download awaits your approval** |
+| Gamma regime study ([GAMMA.md](GAMMA.md)): SqueezeMetrics GEX as a regime switch, same splits | **5 hypotheses (10 tests) on explore: nothing passed**; validate, MES and final test unused → [results/real/gamma/explore.md](results/real/gamma/explore.md) |
 
 Everything under `results/synthetic/` comes from a **random walk**. It proves the
 pipeline runs and has no lookahead: a random walk shows no edge, and it
