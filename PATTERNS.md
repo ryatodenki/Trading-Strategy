@@ -107,3 +107,7 @@ The same rule applies to each level, on 5-minute bars (high side; the low side m
 4. **Final test:** only for hypotheses that pass 1 and 2, and only when you say so. Each is run once, and the run is logged.
 
 If nothing passes explore, validate is not used, and it stays available for a future, better-founded hypothesis.
+
+---
+
+*Erratum, added after the explore run:* "Step 3: the ICT setup and 21 variants of it" should read "the ICT setup: 19 configurations plus 2 engine checks". No rule, split or test above is changed.
