@@ -141,7 +141,8 @@ def _setups(ctx: Ctx, g: _G5Inputs, tf: str, d: int, regime: pd.Series) -> pd.Da
         ok = (risk > 0) & (risk >= resolve_dist(g.min_risk, atr)) & (risk <= resolve_dist(g.max_risk, atr))
     return pd.DataFrame({"placed_ns": fv["known_ns"].to_numpy(np.int64)[ok], "dir": d, "fvg_tf": tf, "tdate": day[ok],
                          "entry": entry[ok], "stop": stop[ok], "stop_dist": risk[ok], "atr": atr[ok], "buffer": buf[ok],
-                         "fvg_top": top[ok], "fvg_bottom": bottom[ok], "level": names[ok], "at_level": at_level[ok]})
+                         "fvg_top": top[ok], "fvg_bottom": bottom[ok], "fvg_c1_ns": fv["c1_start_ns"].to_numpy(np.int64)[ok],
+                         "level": names[ok], "at_level": at_level[ok]})
 
 
 def _nearest_level(ctx: Ctx, g: _G5Inputs, st: pd.DataFrame) -> np.ndarray:
@@ -170,7 +171,8 @@ def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
     tick = ctx.tick
     st = pd.concat([_setups(ctx, g, tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)], ignore_index=True)
     cols = INTENT_COLUMNS + ["expire_ns", "entry_type", "entry", "trail_ns", "trail_px", "exit_style", "regime", "level",
-                             "at_level", "fvg_tf", "target_kind", "stop_dist", "reward_risk", "replaced_at"]
+                             "at_level", "fvg_tf", "target_kind", "stop_dist", "reward_risk", "replaced_at", "fvg_top", "fvg_bottom",
+                             "fvg_c1_ns"]
     if st.empty:
         return pd.DataFrame(columns=cols)
     # reward:risk more than 1:1 to the nearest key level beyond the entry (none: the 2x fallback)
@@ -223,7 +225,8 @@ def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
             "exit_style": "trail" if trail[i] else "fixed", "regime": int(reg[i]), "level": st["level"].iat[i],
             "at_level": bool(st["at_level"].iat[i]), "fvg_tf": st["fvg_tf"].iat[i],
             "target_kind": "none" if trail[i] else ("level" if found[i] else "2x_stop"), "stop_dist": float(risk[i]),
-            "reward_risk": float(rr[i]), "replaced_at": int(replaced[i]),
+            "reward_risk": float(rr[i]), "replaced_at": int(replaced[i]), "fvg_top": float(st["fvg_top"].iat[i]),
+            "fvg_bottom": float(st["fvg_bottom"].iat[i]), "fvg_c1_ns": int(st["fvg_c1_ns"].iat[i]),
         })
     out = pd.DataFrame(rows)[cols]
     out["_rank"] = out["fvg_tf"].map(TF_RANK)

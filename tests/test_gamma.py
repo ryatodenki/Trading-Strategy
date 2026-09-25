@@ -440,3 +440,17 @@ def test_passed_is_kept_apart_per_study():
                         {"stage": "explore", "time_utc": "2026-02-01T00:00:00", "hypothesis": "G4", "passed": False, "study": "gamma"}])
     assert passed(log, "explore") == ["H3"]                   # old rows without a study are the pattern search
     assert passed(log, "explore", "gamma") == ["G2"] and passed(log, "validate", "gamma") == []
+
+
+def test_g5_trade_charts_render(cfg, world, regime, tmp_path):
+    from mnqbt.reports.gamma_charts import plot_g5_equity, plot_g5_trade
+
+    ctx, mk = world
+    it = breakout(ctx, regime)
+    tr = simulate(mk, it, EngineSettings.from_cfg(cfg))[0]
+    g = _G5Inputs(ctx)
+    for style in ("fixed", "trail"):
+        t = tr[tr["exit_style"] == style].iloc[0]
+        f = plot_g5_trade(ctx, g, it.loc[int(t["intent"])], t, 1.5e9, tmp_path / f"{style}.png")
+        assert f.stat().st_size > 20_000
+    assert plot_g5_equity(tr, tmp_path / "eq.png", "t").stat().st_size > 10_000

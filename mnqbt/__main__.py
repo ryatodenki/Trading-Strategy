@@ -243,6 +243,59 @@ def cmd_gamma(args, cfg):
     print(f"report: {d / (args.stage + '.md')}")
 
 
+def cmd_gamma_charts(args, cfg):
+    """Charts of G5 (your breakout setup) trades from the explore split only: per regime the best, the worst and
+    ``--random`` random trades (fixed seed), plus the cumulative result."""
+    from mnqbt.backtest.engine import simulate
+    from mnqbt.data.gex import load_gex
+    from mnqbt.reports.gamma_charts import plot_g5_equity, plot_g5_trade
+    from mnqbt.strategies.explore import SPLITS
+    from mnqbt.strategies.gamma import BY_ID, _G5Inputs
+    from mnqbt.strategies.gamma_run import gamma_dir, load_gamma_world
+
+    gw = load_gamma_world(cfg, args.dataset, "MNQ", "explore")
+    w, h = gw.w, BY_ID["G5"]
+    it = h.build(w.ctx, gw.regime)
+    it = it[(it["tdate"] >= w.start) & (it["tdate"] <= w.end) & (it["flatten_ns"] <= w.mk.ts[-1])].reset_index(drop=True)
+    tr = simulate(w.mk, it, w.st)[0]
+    tr = tr[tr["regime"].notna()].reset_index(drop=True)
+    gex = load_gex(cfg, end=SPLITS["explore"][1])
+    out = gamma_dir(cfg, args.dataset) / "examples"
+    rng = np.random.default_rng(args.seed)
+    picks = []
+    for g in (1, -1):
+        sub = tr[tr["regime"] == g]
+        best, worst = sub["r_net"].idxmax(), sub["r_net"].idxmin()
+        rest = sub.index.difference([best, worst]).to_numpy()
+        rand = rng.choice(rest, size=min(args.random, len(rest)), replace=False)
+        picks += [(best, "best"), (worst, "worst")] + [(int(k), "random") for k in sorted(rand)]
+    G = _G5Inputs(w.ctx)
+    rows = []
+    for n, (k, why) in enumerate(picks, 1):
+        t = tr.loc[k]
+        day = pd.Timestamp(t["tdate"])
+        gval = float(gex[gex.index < day].iloc[-1])
+        f = plot_g5_trade(w.ctx, G, it.loc[int(t["intent"])], t, gval, out / f"g5_{n:02d}.png")
+        rows.append(f"| [{f.name}]({f.name}) | {why} | {'positive' if t['regime'] > 0 else 'negative'} | {day.date()} | "
+                    f"{'long' if t['dir'] > 0 else 'short'} | {it.loc[int(t['intent']), 'fvg_tf']} | {t['exit_reason']} | {t['r_net']:+.2f} |")
+    first, last = (pd.Timestamp(x).date() for x in (tr["tdate"].min(), tr["tdate"].max()))
+    plot_g5_equity(tr, out / "g5_cumulative.png", f"G5, your breakout setup: all {len(tr)} explore trades "
+                   f"({first} → {last}), cumulative R")
+    readme = ["# G5 example trades (explore split only)", "",
+              "Your breakout setup as pre-registered in [GAMMA.md](../../../../GAMMA.md), on MNQ explore data (NQ prices, "
+              "back-adjusted, before MNQ existed). Validate and final-test dates are not loaded.", "",
+              f"Chosen by rule, not by eye: for each gamma regime the best trade, the worst trade and {args.random} random "
+              f"trades (seed {args.seed}). Of all {len(tr)} explore trades, {int((tr['r_net'] > 0).sum())} made money after costs.",
+              "", "![cumulative R](g5_cumulative.png)", "",
+              "| chart | picked as | gamma | date | side | FVG | exit | R net |", "|---|---|---|---|---|---|---|---:|", *rows, "",
+              "How to read a chart: violet triangles are the two latest 5m swing highs / lows when the FVG started (HH/HL "
+              "for longs, LH/LL for shorts); the dashed violet line is the key level the FVG's candles broke; the shaded "
+              "band is the FVG; blue = limit entry (triangle = fill), red = stop (a step line when it trails), green = "
+              "target, orange = VWAP, X = exit.", ""]
+    (out / "README.md").write_text("\n".join(readme))
+    print(f"{len(picks)} trade charts + cumulative chart -> {out}")
+
+
 def cmd_suite(args, cfg):
     from mnqbt.backtest.research import load_features, period_bounds, run_suite
     from mnqbt.reports import report as rp
@@ -452,6 +505,12 @@ def main(argv=None):
     p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
     p.add_argument("--unlock-final", action="store_true", help="allow the final test (only when told to)")
     p.set_defaults(fn=cmd_gamma)
+
+    p = sub.add_parser("gamma-charts", help="charts of G5 (breakout setup) trades from the explore split")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--random", type=int, default=2, help="random trades per gamma regime, besides the best and worst")
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=cmd_gamma_charts)
 
     p = sub.add_parser("strategies", help="STRATEGIES.md candidates, development period only")
     p.add_argument("--dataset", default="real")
