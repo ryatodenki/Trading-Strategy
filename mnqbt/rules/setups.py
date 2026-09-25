@@ -123,8 +123,9 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
     if it.empty:
         return it, funnel
     tr = trig.loc[it["trig"].to_numpy()].reset_index(drop=True)
-    for c in ("dir", "extreme", "start_ns", "known_ns", "smt", "smt_leader", "atr", "prev_extreme", "pair_now", "pair_prev", "pos", "prev_pos"):
-        it[c if c not in ("start_ns", "known_ns", "pos", "prev_pos") else f"trig_{c}"] = tr[c].to_numpy()
+    for c in ("dir", "extreme", "start_ns", "known_ns", "smt", "smt_leader", "atr", "prev_extreme", "pair_now", "pair_prev", "pos", "prev_pos",
+              "level_pos"):
+        it[c if c not in ("start_ns", "known_ns", "pos", "prev_pos", "level_pos") else f"trig_{c}"] = tr[c].to_numpy()
     it["level"] = level_name[it["trig"].to_numpy()]
     d = it["dir"].to_numpy()
     e = it["entry"].to_numpy(float)
@@ -151,7 +152,8 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
     if s["target"]["mode"] == "liquidity":
         lt = F.levels(cfg, get(cfg, "rules.smt.timeframe"))
         lstart = F.bars("a", get(cfg, "rules.smt.timeframe"))["start_ns"].to_numpy()
-        row = np.searchsorted(lstart, it["placed_ns"].to_numpy(), side="right") - 1
+        # levels as of the start of the last bar that STARTED before placement, like section 5
+        row = np.searchsorted(lstart, it["placed_ns"].to_numpy(), side="left") - 1
         min_r = float(s["target"]["liquidity_min_r"])
         liq = np.full(len(it), np.nan)
         liq_name = np.full(len(it), "", dtype=object)

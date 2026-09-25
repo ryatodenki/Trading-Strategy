@@ -99,7 +99,7 @@ def plot_setup(F, cfg: dict, trade: pd.Series, path: Path, tf: str = "5min", bef
     lv_tbl = F.levels(cfg, get(cfg, "rules.smt.timeframe"))
     name = str(trade.get("level", ""))
     if name and name in lv_tbl:
-        lvl = float(lv_tbl[name].iloc[p_trig])
+        lvl = float(lv_tbl[name].iloc[int(trade["trig_level_pos"])])
         ax1.axhline(lvl, color=MUTED, linewidth=1.2, zorder=1)
         ax1.text(xr - 0.5, lvl, f" {_label(name)}  {lvl:,.2f}", color=INK2, fontsize=8, va="bottom", ha="right")
 

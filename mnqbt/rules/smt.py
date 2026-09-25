@@ -19,8 +19,10 @@ Key level (``levels.mode``):
   near  : |MNQ swing extreme - nearest key level| <= tolerance
   sweep : the swing extreme traded through a key level by > 0 and <= tolerance
           (the level reported is the swept one closest to the extreme)
-using the level table as it stood at the START of the swing bar (so the swing
-cannot create its own level).  High-type levels for swing highs, low-type for lows.
+using the level table as it stood at the START of the SMT's first swing p (so
+neither swing of the pair can be the level, e.g. a "day high" set by p); for a
+swing with no previous swing in range, at the start of the swing bar itself.
+High-type levels for swing highs, low-type for lows.
 
 Known at: close of bar j + swing_n (the swing's confirmation).
 """
@@ -98,12 +100,13 @@ def detect_triggers(a: pd.DataFrame, b: pd.DataFrame, levels: pd.DataFrame, atr:
 
         core_cols = level_columns(cfg, side, include_value_area=False)
         va_cols = ["vah" if side > 0 else "val"]
-        core_name, core_dist = nearest_level(levels, j, core_cols, a_now)
-        va_name, va_dist = nearest_level(levels, j, va_cols, a_now)
+        lv_row = np.where(has_p, p, j)       # levels that existed before the SMT's first swing
+        core_name, core_dist = nearest_level(levels, lv_row, core_cols, a_now)
+        va_name, va_dist = nearest_level(levels, lv_row, va_cols, a_now)
         t = tol[j]
         # sweep: the swing traded THROUGH a level (by at least one tick, at most the tolerance)
-        sw_core_name, sw_core_depth = _swept(levels, j, core_cols, a_now, side, t)
-        sw_va_name, sw_va_depth = _swept(levels, j, va_cols, a_now, side, t)
+        sw_core_name, sw_core_depth = _swept(levels, lv_row, core_cols, a_now, side, t)
+        sw_va_name, sw_va_depth = _swept(levels, lv_row, va_cols, a_now, side, t)
         frames.append(
             pd.DataFrame(
                 {
@@ -113,6 +116,7 @@ def detect_triggers(a: pd.DataFrame, b: pd.DataFrame, levels: pd.DataFrame, atr:
                     "start_ns": start[j],
                     "known_ns": known[j + n],
                     "prev_pos": p,
+                    "level_pos": lv_row,
                     "prev_extreme": np.where(has_p, a_prev, np.nan),
                     "pair_now": b_now,
                     "pair_prev": np.where(has_p, b_prev, np.nan),

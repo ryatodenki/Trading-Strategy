@@ -113,3 +113,19 @@ def test_sweep_reports_the_swept_level_not_the_nearest(cfg):
     _, t = _run(A_HIGHS, b_highs, cfg, pdh=21.5, dh=22.25)   # extreme 22: dh is nearer but not traded through
     r = t.iloc[0]
     assert r["level_core"] == "dh" and r["sweep_level_core"] == "pdh" and r["sweep_depth_core"] == 0.5
+
+
+def test_level_must_exist_before_the_smts_first_swing(cfg):
+    # The first swing (bar 3, high 20) lifts the running day high from 19 to 20. The second swing
+    # (bar 9, 20.5) sweeps that 20 by 0.5, but it is the SMT's own first swing, not a key level.
+    b_highs = [10, 11, 12, 20, 13, 12, 13, 14, 15, 19, 16, 14, 13]
+    a_highs = list(A_HIGHS)
+    a_highs[9] = 20.5
+    dh = np.where(np.arange(len(a_highs)) <= 3, 19.0, 20.0)
+    _, t = _run(a_highs, b_highs, cfg, dh=dh)
+    r = t.iloc[0]
+    assert bool(r["smt"]) and r["level_pos"] == 3
+    assert not bool(r["sweep_core"]) and not bool(r["near_core"])     # 19 is 1.5 away: beyond the 1-pt tolerance
+    # a level that already existed (prior-day high 20.25) still counts
+    _, t = _run(a_highs, b_highs, cfg, dh=dh, pdh=20.25)
+    assert bool(t.iloc[0]["sweep_core"]) and t.iloc[0]["sweep_level_core"] == "pdh"

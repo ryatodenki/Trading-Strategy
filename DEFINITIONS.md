@@ -53,6 +53,8 @@ At any moment, these are the levels that exist, all built from data before that 
 
 "**At a key level**" means the MNQ swing extreme **swept** one of these levels: it traded *through* the level by at least 1 tick and at most **max(3 pts, 0.03 × ATR)**, about 10 points at 2025 prices. Swing highs are tested against high-type levels and swing lows against low-type levels. If several were swept, the one closest to the extreme is reported.
 
+The levels used are the ones that existed **before the SMT's first swing**. So a day high set by the SMT's own first swing doesn't count; the day high from before it does.
+
 The older **near** mode (`rules.levels.mode: near`) is still available: the swing extreme only has to be within the tolerance of a level, on either side.
 
 ## 3. Fair value gap (entry zone)
@@ -157,7 +159,7 @@ For a **bearish** SMT:
 ## Judgment calls I made — please confirm or change
 
 1. **Key-level tolerance looks loose.** ~~Options: sweep, shrink the tolerance, or drop the running day high/low and swing levels.~~ **Decided: require a sweep**, plus a minimum SMT size (§2, §4).
-   - Still open: on real data, the running day high/low and the 15m swings are still ~80% of the levels swept. In 23% of SMT sweeps the level swept is the SMT's own first swing (~40% for the running day high/low), so the key level adds nothing to the SMT there.
+   - Follow-up, **decided:** the level must have existed before the SMT's first swing. Before this rule, 23% of SMT sweeps were of the SMT's own first swing (~40% for the running day high/low), so the key level added nothing to the SMT there.
 2. **Which sessions to trade.** Default is all three, so the by-session table can show where it works. If you only trade London + NY, that should be the baseline from the start, not a finding after the fact.
 3. **Structure timeframe.** Default is 1-hour swings (2 bars each side). Do you read order flow on 1h, 4h, or 15m?
 4. **VWAP direction.** Is "long above VWAP" (trend) or "long below VWAP" (discount) the rule you use?
