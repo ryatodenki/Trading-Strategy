@@ -44,6 +44,7 @@ Pre-registered in [GAMMA.md](../../../GAMMA.md). 1R = 10% of the entry day's dai
 Multiple-testing adjustment: Holm across 10 tests. A hypothesis passes if its main test's adjusted p < 0.05 with avg R > 0, and its contrast Δ > 0.
 
 **Nothing passed this stage.**
+
 ## Observations after the run (description only, not tests; nothing here changes a verdict)
 
 - **Negative gamma is rare.** Only 102 of the 1,768 explore days with a regime (6%) had negative GEX, so G3 and the negative-day half of G5 rest on few trades.
