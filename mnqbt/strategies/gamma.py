@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from mnqbt.config import get, resolve_dist
+from mnqbt.rules.bars import tf_minutes
 from mnqbt.rules.fvg import detect_fvgs, entry_price
 from mnqbt.rules.levels import _asof
 from mnqbt.rules.swings import swings
@@ -43,13 +44,13 @@ def vwap_trend_r(ctx: Ctx) -> pd.DataFrame:
 
 # ---------------------------------------------------------------------------- G5
 SWING_N = 2                         # 5-minute swings, 2 bars each side
-WINDOW = (3 * 60, 15 * 60)          # breakout bar starts 03:00-15:00 ET
-FVG_AGE = 12                        # bars of the FVG's own timeframe
-ORDER_MINUTES = 60                  # limit order lifetime
-LAST_ORDER_MIN = 15 * 60 + 30       # ...and never past 15:30
+WINDOW = (3 * 60, 15 * 60)          # the FVG's third candle starts 03:00-15:00 ET
+LAST_ORDER_MIN = 15 * 60 + 30       # orders wait with no time limit, but no new entries from 15:30
 TARGET_MIN, TARGET_FALLBACK = 1.0, 2.0   # nearest key level >= 1x stop distance, else 2x
-TARGET_LEVELS = {1: ["pdh", "dh", "asia_h", "london_h", "ny_h", "sh1", "sh2", "sh3"],
-                 -1: ["pdl", "dl", "asia_l", "london_l", "ny_l", "sl1", "sl2", "sl3"]}
+BREAK_LEVELS = {1: ["swing", "pdh", "dh", "vah", "val", "vwap"], -1: ["swing", "pdl", "dl", "vah", "val", "vwap"]}
+TARGET_LEVELS = {1: ["pdh", "dh", "asia_h", "london_h", "ny_h", "sh1", "sh2", "sh3", "vah", "val"],
+                 -1: ["pdl", "dl", "asia_l", "london_l", "ny_l", "sl1", "sl2", "sl3", "vah", "val"]}   # + VWAP at the order
+TF_RANK = {"15min": 0, "5min": 1}   # set up at the same moment: the 15-minute FVG goes first
 
 
 def _round(price, up: bool, tick: float) -> np.ndarray:
@@ -58,115 +59,153 @@ def _round(price, up: bool, tick: float) -> np.ndarray:
 
 
 def _fvgs(ctx: Ctx, tf: str) -> pd.DataFrame:
+    """Harness FVGs (3 same-direction candles, gap >= rules.fvg.min_size) on ``tf``."""
     f = get(ctx.cfg, "rules.fvg")
     bars = ctx.F.bars("a", tf)
-    return detect_fvgs(bars, tf, resolve_dist(f["min_size"], ctx.F.atr_for(ctx.cfg, bars)), FVG_AGE, True)
+    return detect_fvgs(bars, tf, resolve_dist(f["min_size"], ctx.F.atr_for(ctx.cfg, bars)), int(f["max_age_bars"]), True)
 
 
-def _latest_alive(fv: pd.DataFrame, d: int, t_ns: np.ndarray, day: np.ndarray) -> np.ndarray:
-    """Row of the most recent direction-``d`` FVG known by ``t_ns``, if still alive then and from the same
-    trading day (-1 otherwise).  Every FVG lives equally long, so the latest known is the latest to expire."""
-    x = fv[fv["dir"] == d].sort_values("known_ns", kind="stable")
-    kn = x["known_ns"].to_numpy(np.int64)
-    i = np.searchsorted(kn, t_ns, side="right") - 1
-    ok = i >= 0
+def _vwap_at(ctx: Ctx, vw: np.ndarray, t_ns: np.ndarray, day: np.ndarray) -> np.ndarray:
+    """VWAP known at ``t_ns``: at the close of the last 1m bar that started before it, on the same trading day."""
+    i = np.searchsorted(ctx.ts, t_ns, side="left") - 1
     j = np.maximum(i, 0)
-    ok &= x["expire_ns"].to_numpy(np.int64)[j] > t_ns
-    ok &= pd.DatetimeIndex(x["tdate"].to_numpy()[j]).values == np.asarray(day, "datetime64[ns]")
-    return np.where(ok, x.index.to_numpy()[j], -1)
+    return np.where((i >= 0) & (ctx.bar_tdate.values[j] == np.asarray(day, "datetime64[ns]")), vw[j], np.nan)
+
+
+class _G5Inputs:
+    """Everything G5 reads, computed once per build."""
+
+    def __init__(self, ctx: Ctx):
+        F, cfg = ctx.F, ctx.cfg
+        self.b5 = F.bars("a", "5min")
+        self.start5 = self.b5["start_ns"].to_numpy(np.int64)
+        self.lv = F.levels(cfg, "5min")
+        self.vw = F.vwap(cfg)
+        sw = swings(self.b5, SWING_N)
+        self.sw = {}
+        for kind in (1, -1):
+            x = sw[sw["kind"] == kind].sort_values("known_ns", kind="stable")
+            self.sw[kind] = (x["known_ns"].to_numpy(np.int64), x["price"].to_numpy(float))
+        s_cfg = get(cfg, "setup.stop")
+        self.buffer, self.min_risk, self.max_risk = s_cfg["buffer"], s_cfg["min_risk"], s_cfg["max_risk"]
+        self.flat = F.flatten_ns(cfg)
+
+
+def _setups(ctx: Ctx, g: _G5Inputs, tf: str, d: int, regime: pd.Series) -> pd.DataFrame:
+    """Direction-``d`` breakout FVGs on ``tf``: the gap contains a key level (candle 1's high <= level <= candle 3's
+    low for a long), in 5-minute higher-high / higher-low structure; levels and swings as known when candle 2 starts."""
+    fv = _fvgs(ctx, tf)
+    fv = fv[fv["dir"] == d].reset_index(drop=True)
+    width = tf_minutes(tf) * NS_PER_MIN
+    c2 = fv["c1_start_ns"].to_numpy(np.int64) + width
+    day = pd.DatetimeIndex(fv["tdate"].to_numpy())
+    r5 = np.searchsorted(g.start5, c2, side="left")
+    ok = r5 < len(g.start5)
+    ok[ok] &= g.start5[r5[ok]] == c2[ok]                      # the 5m bar where candle 2 starts
+    r5 = np.where(ok, r5, 0)
+    hi_kn, hi_px = g.sw[1]
+    lo_kn, lo_px = g.sw[-1]
+    h1, h2 = _asof(hi_kn, hi_px, c2, 1), _asof(hi_kn, hi_px, c2, 2)
+    l1, l2 = _asof(lo_kn, lo_px, c2, 1), _asof(lo_kn, lo_px, c2, 2)
+    with np.errstate(invalid="ignore"):
+        trend = ((h1 > h2) & (l1 > l2)) if d > 0 else ((h1 < h2) & (l1 < l2))
+    lv = g.lv
+    level = {"swing": h1 if d > 0 else l1, "vwap": _vwap_at(ctx, g.vw, c2, day.values)}
+    for name in BREAK_LEVELS[d]:
+        if name not in level:
+            level[name] = lv[name].to_numpy(float)[r5]
+    top, bottom = fv["top"].to_numpy(float), fv["bottom"].to_numpy(float)
+    names = np.full(len(fv), "", dtype=object)
+    for name in BREAK_LEVELS[d]:
+        with np.errstate(invalid="ignore"):
+            inside = (bottom <= level[name]) & (level[name] <= top)
+        names = np.where(inside, np.where(names == "", name, names + "+" + name), names)
+    c3_tod = _tod(ctx.et_minute(fv["known_ns"].to_numpy(np.int64) - width))
+    keep = (ok & trend & (names != "") & (c3_tod >= _tod(WINDOW[0])) & (c3_tod < _tod(WINDOW[1]))
+            & ctx.can_enter(day) & np.isfinite(regime.reindex(day).to_numpy(float)))
+    fv, day, names, top, bottom = fv[keep], day[keep], names[keep], top[keep], bottom[keep]
+    atr = ctx.atr_on(day)
+    entry = entry_price(top, bottom, np.full(len(fv), d), 0.5, ctx.tick)
+    buf = resolve_dist(g.buffer, atr)
+    stop = _round((bottom - buf) if d > 0 else (top + buf), d < 0, ctx.tick)
+    risk = d * (entry - stop)
+    with np.errstate(invalid="ignore"):
+        ok = (risk > 0) & (risk >= resolve_dist(g.min_risk, atr)) & (risk <= resolve_dist(g.max_risk, atr))
+    return pd.DataFrame({"placed_ns": fv["known_ns"].to_numpy(np.int64)[ok], "dir": d, "fvg_tf": tf, "tdate": day[ok],
+                         "entry": entry[ok], "stop": stop[ok], "stop_dist": risk[ok], "atr": atr[ok], "buffer": buf[ok],
+                         "fvg_top": top[ok], "fvg_bottom": bottom[ok], "level": names[ok]})
 
 
 def breakout(ctx: Ctx, regime: pd.Series, swap: bool = False) -> pd.DataFrame:
-    """G5: breakout of the latest 5m swing high / prior-day high in a higher-high, higher-low 5m structure
-    (shorts mirror), with a 15m FVG present; limit entry at the midpoint of the latest untouched 5m FVG;
-    stop beyond the latest 5m swing low; exit by the day's gamma: fixed target on positive days, trailing
-    stop on negative days (``swap`` reverses that, for the contrast)."""
-    F, cfg, tick = ctx.F, ctx.cfg, ctx.tick
-    b5 = F.bars("a", "5min")
-    start, end = b5["start_ns"].to_numpy(np.int64), b5["known_ns"].to_numpy(np.int64)
-    h, l, c = (b5[k].to_numpy(float) for k in ("high", "low", "close"))
-    day = pd.DatetimeIndex(b5["tdate"].to_numpy())
-    tod = _tod(ctx.et_minute(start))
-    atr = F.atr_for(cfg, b5)
-    lv = F.levels(cfg, "5min")
+    """G5 (GAMMA.md): a 5- or 15-minute FVG whose gap contains a key level, in the direction of 5-minute
+    structure; limit entry at its midpoint (a 15-minute setup replaces a waiting 5-minute order); stop a buffer
+    beyond the FVG; exit by the day's gamma: fixed target on positive days, trailing stop on negative days
+    (``swap`` reverses that, for the contrast)."""
+    g = _G5Inputs(ctx)
+    tick = ctx.tick
+    st = pd.concat([_setups(ctx, g, tf, d, regime) for tf in ("5min", "15min") for d in (1, -1)], ignore_index=True)
+    cols = INTENT_COLUMNS + ["expire_ns", "entry_type", "entry", "trail_ns", "trail_px", "exit_style", "regime", "level",
+                             "fvg_tf", "target_kind", "stop_dist", "replaced_at"]
+    if st.empty:
+        return pd.DataFrame(columns=cols)
+    td = pd.DatetimeIndex(st["tdate"])
+    placed, d = st["placed_ns"].to_numpy(np.int64), st["dir"].to_numpy(int)
+    entry, stop, risk = st["entry"].to_numpy(float), st["stop"].to_numpy(float), st["stop_dist"].to_numpy(float)
+    reg = regime.reindex(td).to_numpy(float)
+    flat = g.flat.reindex(td).to_numpy(np.int64)
+    expire = ctx.at(td, LAST_ORDER_MIN)
 
-    sw = swings(b5, SWING_N)
-    last = {}
-    for kind in (1, -1):
-        s = sw[sw["kind"] == kind].sort_values("known_ns", kind="stable")
-        kn, px = s["known_ns"].to_numpy(np.int64), s["price"].to_numpy(float)
-        last[kind] = (_asof(kn, px, start, 1), _asof(kn, px, start, 2), kn, px)   # as of each bar's start
-    with np.errstate(invalid="ignore"):
-        trend = {1: (last[1][0] > last[1][1]) & (last[-1][0] > last[-1][1]),
-                 -1: (last[1][0] < last[1][1]) & (last[-1][0] < last[-1][1])}
-    prev_c = np.r_[np.nan, c[:-1]]
-    same_prev = np.r_[False, day[1:] == day[:-1]]
-    in_window = (tod >= _tod(WINDOW[0])) & (tod < _tod(WINDOW[1]))
-    fv5, fv15 = _fvgs(ctx, "5min"), _fvgs(ctx, "15min")
-    s_cfg = get(cfg, "setup.stop")
-    buffer = resolve_dist(s_cfg["buffer"], atr)
-    rmin, rmax = resolve_dist(s_cfg["min_risk"], atr), resolve_dist(s_cfg["max_risk"], atr)
-    flat_day = F.flatten_ns(cfg)
-    reg = regime.reindex(day).to_numpy(float)
+    # 15 minutes beats 5 minutes: a waiting 5m order is cancelled when the next same-direction 15m setup is
+    # confirmed after it and before 15:30 (so on the same trading day)
+    replaced = np.zeros(len(st), np.int64)
+    is15 = (st["fvg_tf"] == "15min").to_numpy()
+    for side in (1, -1):
+        p15 = np.sort(placed[is15 & (d == side)])
+        k = np.flatnonzero(~is15 & (d == side))
+        if len(p15) == 0 or len(k) == 0:
+            continue
+        nxt = np.searchsorted(p15, placed[k], side="right")
+        cand = p15[np.minimum(nxt, len(p15) - 1)]
+        hit = (nxt < len(p15)) & (cand < expire[k])
+        replaced[k[hit]] = cand[hit]
+    expire = np.where(replaced > 0, replaced, expire)
+
+    # fixed target: nearest key level >= 1x stop distance beyond the entry (levels as of the order), else 2x
+    row = np.searchsorted(g.start5, placed, side="left") - 1
+    vw_now = _vwap_at(ctx, g.vw, placed, td.values)
+    tgt = np.full(len(st), np.nan)
+    kind = np.full(len(st), "2x_stop", dtype=object)
+    for side in (1, -1):
+        m = np.flatnonzero(d == side)
+        vals = np.column_stack([g.lv[TARGET_LEVELS[side]].to_numpy(float)[row[m]], vw_now[m]])
+        thresh = (entry[m] + side * TARGET_MIN * risk[m])[:, None]
+        with np.errstate(invalid="ignore"):
+            cand = np.where((vals > thresh) if side > 0 else (vals < thresh), vals, np.inf if side > 0 else -np.inf)
+        best = cand.min(axis=1) if side > 0 else cand.max(axis=1)
+        found = np.isfinite(best)
+        tgt[m] = _round(np.where(found, best, entry[m] + side * TARGET_FALLBACK * risk[m]), side > 0, tick)
+        kind[m[found]] = "level"
+    trail = (reg < 0) != swap
 
     rows = []
-    for d in (1, -1):
-        swing_lvl = last[d][0]
-        prior = lv["pdh" if d > 0 else "pdl"].to_numpy(float)
-        with np.errstate(invalid="ignore"):
-            cross_sw = same_prev & (d * c > d * swing_lvl) & (d * prev_c <= d * swing_lvl)
-            cross_pd = same_prev & (d * c > d * prior) & (d * prev_c <= d * prior)
-        k = np.flatnonzero(in_window & trend[d] & (cross_sw | cross_pd) & ctx.can_enter(day) & np.isfinite(reg))
-        if len(k) == 0:
-            continue
-        placed = end[k]
-        ok15 = _latest_alive(fv15, d, placed, day[k].values) >= 0
-        f5 = _latest_alive(fv5, d, placed, day[k].values)
-        k, placed, f5 = k[ok15 & (f5 >= 0)], placed[ok15 & (f5 >= 0)], f5[ok15 & (f5 >= 0)]
-        z = fv5.loc[f5]
-        entry = entry_price(z["top"].to_numpy(), z["bottom"].to_numpy(), np.full(len(k), d), 0.5, tick)
-        c3 = z["c3_pos"].to_numpy(int)
-        untouched = np.array([b <= a or ((l[a + 1:b + 1].min() > e) if d > 0 else (h[a + 1:b + 1].max() < e))
-                              for a, b, e in zip(c3, k, entry)], bool)   # no bar after c3, up to the breakout bar, reached the entry
-        opp = last[-d][0][k]                                          # the higher low (long) / lower high (short)
-        stop = _round(opp - d * buffer[k], d < 0, tick)
-        risk = d * (entry - stop)
-        with np.errstate(invalid="ignore"):
-            keep = untouched & np.isfinite(risk) & (risk > 0) & (risk >= rmin[k]) & (risk <= rmax[k])
-        k, placed, entry, stop, risk = k[keep], placed[keep], entry[keep], stop[keep], risk[keep]
-        td = day[k]
-        flat = flat_day.reindex(td).to_numpy(np.int64)
-        expire = np.minimum(placed + ORDER_MINUTES * NS_PER_MIN, ctx.at(td, LAST_ORDER_MIN))
-        trail = (reg[k] < 0) != swap
-        # fixed target: nearest key level >= 1x stop distance beyond the entry, else 2x
-        vals = lv[TARGET_LEVELS[d]].to_numpy(float)[k]
-        thresh = (entry + d * TARGET_MIN * risk)[:, None]
-        with np.errstate(invalid="ignore"):
-            cand = np.where((vals > thresh) if d > 0 else (vals < thresh), vals, np.inf if d > 0 else -np.inf)
-        best = cand.min(axis=1) if d > 0 else cand.max(axis=1)
-        tgt = _round(np.where(np.isfinite(best), best, entry + d * TARGET_FALLBACK * risk), d > 0, tick)
-        tgt_src = np.where(np.isfinite(best), "level", "2x_stop")
-        # trailing stop: 5m swings on the stop side confirmed after placement, before the flatten time
-        kn, px = last[-d][2], last[-d][3]
-        for i in range(len(k)):
-            t_ns, t_px = np.array([], np.int64), np.array([], float)
-            if trail[i]:
-                a, b = np.searchsorted(kn, placed[i], side="right"), np.searchsorted(kn, flat[i], side="left")
-                t_ns, t_px = kn[a:b], _round(px[a:b] - d * buffer[k[i]], d < 0, tick)
-            rows.append({
-                "placed_ns": int(placed[i]), "dir": d, "flatten_ns": int(flat[i]), "expire_ns": int(expire[i]),
-                "stop": float(stop[i]), "target": np.nan if trail[i] else float(tgt[i]), "target_src": "abs",
-                "target_r": np.nan, "risk_unit": R_ATR * float(atr[k[i]]), "ref_price": float(c[k[i]]), "atr": float(atr[k[i]]),
-                "tdate": td[i], "exit_tdate": td[i], "entry_type": "limit", "entry": float(entry[i]),
-                "trail_ns": t_ns, "trail_px": t_px, "exit_style": "trail" if trail[i] else "fixed", "regime": int(reg[k[i]]),
-                "level": "swing+pdh" if (cross_sw[k[i]] and cross_pd[k[i]]) else ("swing" if cross_sw[k[i]] else "prior_day"),
-                "target_kind": "none" if trail[i] else tgt_src[i], "stop_dist": float(risk[i]),
-            })
-    cols = INTENT_COLUMNS + ["expire_ns", "entry_type", "entry", "trail_ns", "trail_px", "exit_style", "regime", "level",
-                             "target_kind", "stop_dist"]
-    if not rows:
-        return pd.DataFrame(columns=cols)
-    return pd.DataFrame(rows)[cols].sort_values(["placed_ns", "dir"], kind="stable").reset_index(drop=True)
+    for i in range(len(st)):
+        t_ns, t_px = np.array([], np.int64), np.array([], float)
+        if trail[i]:
+            kn, px = g.sw[-d[i]]
+            a, b = np.searchsorted(kn, placed[i], side="right"), np.searchsorted(kn, flat[i], side="left")
+            t_ns, t_px = kn[a:b], _round(px[a:b] - d[i] * st["buffer"].iat[i], d[i] < 0, tick)
+        rows.append({
+            "placed_ns": int(placed[i]), "dir": int(d[i]), "flatten_ns": int(flat[i]), "expire_ns": int(expire[i]),
+            "stop": float(stop[i]), "target": np.nan if trail[i] else float(tgt[i]), "target_src": "abs", "target_r": np.nan,
+            "risk_unit": R_ATR * float(st["atr"].iat[i]), "ref_price": float(entry[i]), "atr": float(st["atr"].iat[i]),
+            "tdate": td[i], "exit_tdate": td[i], "entry_type": "limit", "entry": float(entry[i]), "trail_ns": t_ns, "trail_px": t_px,
+            "exit_style": "trail" if trail[i] else "fixed", "regime": int(reg[i]), "level": st["level"].iat[i],
+            "fvg_tf": st["fvg_tf"].iat[i], "target_kind": "none" if trail[i] else kind[i], "stop_dist": float(risk[i]),
+            "replaced_at": int(replaced[i]),
+        })
+    out = pd.DataFrame(rows)[cols]
+    out["_rank"] = out["fvg_tf"].map(TF_RANK)
+    return out.sort_values(["placed_ns", "_rank", "dir"], kind="stable").drop(columns="_rank").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------- registry
@@ -185,7 +224,7 @@ HYPOTHESES: tuple[GammaHypothesis, ...] = (
     GammaHypothesis("G2", "sweeps_pos", "Asia/London/prior-day sweep reversal, positive gamma", session_sweeps, "single", 1),
     GammaHypothesis("G3", "open_drive_neg", "Open drive (09:35-10:00), negative gamma", open_drive, "each", -1),
     GammaHypothesis("G4", "vwap_trend_neg", "VWAP trend following, negative gamma", vwap_trend_r, "each", -1),
-    GammaHypothesis("G5", "breakout_gamma_exits", "Breakout + FVG entry; fixed target (+gamma) / trailing stop (-gamma)",
+    GammaHypothesis("G5", "breakout_gamma_exits", "Key-level breakout FVG (15m over 5m); fixed target (+gamma) / trailing stop (-gamma)",
                     breakout, "single", 0),
 )
 BY_ID = {h.id: h for h in HYPOTHESES}

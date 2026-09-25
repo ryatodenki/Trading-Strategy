@@ -138,94 +138,123 @@ def test_g2_g3_g4_reuse_the_declared_rules_unchanged(ctx):
 
 
 def _g5_reference(ctx, regime, days) -> list[dict]:
-    """GAMMA.md G5 re-derived bar by bar, straight from the text (slow; limited to ``days``)."""
+    """GAMMA.md G5 re-derived FVG by FVG, straight from the text (slow; limited to ``days``)."""
     F, cfg, tick = ctx.F, ctx.cfg, ctx.tick
-    b5, b15 = F.bars("a", "5min"), F.bars("a", "15min")
-    start, end = b5["start_ns"].to_numpy(np.int64), b5["known_ns"].to_numpy(np.int64)
-    c = b5["close"].to_numpy(float)
-    lo, hi = b5["low"].to_numpy(float), b5["high"].to_numpy(float)
-    day = pd.DatetimeIndex(b5["tdate"].to_numpy())
-    tod = _tod(ctx.et_minute(start))
-    atr = F.atr_for(cfg, b5)
+    b5 = F.bars("a", "5min")
+    start5 = b5["start_ns"].to_numpy(np.int64)
     lv = F.levels(cfg, "5min")
+    vw = F.vwap(cfg)
+    ts1, day1 = ctx.ts, ctx.bar_tdate
     sw = swings(b5, 2)
     SW = {kind: sw[sw["kind"] == kind].sort_values("known_ns") for kind in (1, -1)}
-    fc = get(cfg, "rules.fvg")
-    fv5 = detect_fvgs(b5, "5min", resolve_dist(fc["min_size"], F.atr_for(cfg, b5)), 12, True)
-    fv15 = detect_fvgs(b15, "15min", resolve_dist(fc["min_size"], F.atr_for(cfg, b15)), 12, True)
-    sc = get(cfg, "setup.stop")
+    fc, sc = get(cfg, "rules.fvg"), get(cfg, "setup.stop")
     flat_day = F.flatten_ns(cfg)
-    out = []
-    for k in np.flatnonzero(day.isin(days)):
-        if k == 0 or day[k - 1] != day[k] or not (_tod(180) <= tod[k] < _tod(900)):
-            continue
-        g = regime.get(day[k], np.nan)
-        if not ctx.can_enter(day[k:k + 1])[0] or not np.isfinite(g):
-            continue
-        hs = SW[1][SW[1]["known_ns"] <= start[k]]["price"].to_numpy()
-        ls = SW[-1][SW[-1]["known_ns"] <= start[k]]["price"].to_numpy()
-        if len(hs) < 2 or len(ls) < 2:
-            continue
-        for d in (1, -1):
-            same, other = (hs, ls) if d > 0 else (ls, hs)
-            if not (d * same[-1] > d * same[-2] and d * other[-1] > d * other[-2]):
+
+    def vwap_known_at(t, day):
+        i = int(np.searchsorted(ts1, t, side="left")) - 1
+        return vw[i] if i >= 0 and day1[i] == day else np.nan
+
+    setups = []
+    for tf, width in (("5min", 5), ("15min", 15)):
+        bars = F.bars("a", tf)
+        fv = detect_fvgs(bars, tf, resolve_dist(fc["min_size"], F.atr_for(cfg, bars)), 12, True)
+        for _, z in fv[pd.DatetimeIndex(fv["tdate"]).isin(days)].iterrows():
+            d, day = int(z["dir"]), pd.Timestamp(z["tdate"])
+            c2 = int(z["c1_start_ns"]) + width * NS_PER_MIN
+            c3_start = int(z["known_ns"]) - width * NS_PER_MIN
+            if not (_tod(180) <= _tod(ctx.et_minute(np.array([c3_start])))[0] < _tod(900)):
                 continue
-            pdl = lv["pdh" if d > 0 else "pdl"].iat[k]
-            crossed = [L for L in (same[-1], pdl) if np.isfinite(L) and d * c[k] > d * L and d * c[k - 1] <= d * L]
-            if not crossed:
+            if not ctx.can_enter(pd.DatetimeIndex([day]))[0] or not np.isfinite(regime.get(day, np.nan)):
                 continue
-            t = end[k]
-            a15 = fv15[(fv15["dir"] == d) & (fv15["known_ns"] <= t) & (fv15["expire_ns"] > t) & (fv15["tdate"] == day[k])]
-            f5 = fv5[(fv5["dir"] == d) & (fv5["known_ns"] <= t)]
-            if a15.empty or f5.empty:
+            hs = SW[1][SW[1]["known_ns"] <= c2]["price"].to_numpy()
+            ls = SW[-1][SW[-1]["known_ns"] <= c2]["price"].to_numpy()
+            if len(hs) < 2 or len(ls) < 2:
                 continue
-            z = f5.sort_values("known_ns", kind="stable").iloc[-1]
-            if not (z["expire_ns"] > t and pd.Timestamp(z["tdate"]) == day[k]):
+            up, down = hs[-1] > hs[-2] and ls[-1] > ls[-2], hs[-1] < hs[-2] and ls[-1] < ls[-2]
+            if not (up if d > 0 else down):
                 continue
-            e = float(entry_price(np.array([z["top"]]), np.array([z["bottom"]]), np.array([d]), 0.5, tick)[0])
-            seg = slice(int(z["c3_pos"]) + 1, k + 1)
-            if (lo[seg] <= e).any() if d > 0 else (hi[seg] >= e).any():
+            r = int(np.searchsorted(start5, c2))
+            if r >= len(start5) or start5[r] != c2:
                 continue
-            buf = float(resolve_dist(sc["buffer"], atr[k]))
-            stop = np.floor((other[-1] - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((other[-1] + buf) / tick - 1e-9) * tick
-            risk = d * (e - stop)
-            if not (risk > 0 and resolve_dist(sc["min_risk"], atr[k]) <= risk <= resolve_dist(sc["max_risk"], atr[k])):
-                continue
-            row = {"placed_ns": int(t), "dir": d, "entry": e, "stop": stop, "regime": int(g)}
-            if g > 0:
-                lvls = lv[TARGET_LEVELS[d]].iloc[k].to_numpy(float)
-                beyond = lvls[np.isfinite(lvls) & (d * lvls > d * (e + d * risk))]
-                raw = (beyond.min() if d > 0 else beyond.max()) if len(beyond) else e + 2 * d * risk
-                row["target"] = np.ceil(raw / tick - 1e-9) * tick if d > 0 else np.floor(raw / tick + 1e-9) * tick
-                row["trail_ns"] = []
+            if d > 0:
+                levels = {"swing": hs[-1], "pdh": lv["pdh"].iat[r], "dh": lv["dh"].iat[r]}
             else:
-                row["target"] = np.nan
-                opp = SW[-d]
-                later = opp[(opp["known_ns"] > t) & (opp["known_ns"] < flat_day[day[k]])]
-                row["trail_ns"] = later["known_ns"].tolist()
-                p = later["price"].to_numpy(float)
-                row["trail_px"] = (np.floor((p - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((p + buf) / tick - 1e-9) * tick).tolist()
-            out.append(row)
+                levels = {"swing": ls[-1], "pdl": lv["pdl"].iat[r], "dl": lv["dl"].iat[r]}
+            levels.update(vah=lv["vah"].iat[r], val=lv["val"].iat[r], vwap=vwap_known_at(c2, day))
+            broken = [n for n, L in levels.items() if np.isfinite(L) and z["bottom"] <= L <= z["top"]]
+            if not broken:
+                continue
+            atr = ctx.atr_on(pd.DatetimeIndex([day]))[0]
+            e = float(entry_price(np.array([z["top"]]), np.array([z["bottom"]]), np.array([d]), 0.5, tick)[0])
+            buf = float(resolve_dist(sc["buffer"], atr))
+            stop = np.floor((z["bottom"] - buf) / tick + 1e-9) * tick if d > 0 else np.ceil((z["top"] + buf) / tick - 1e-9) * tick
+            risk = d * (e - stop)
+            if not (risk > 0 and resolve_dist(sc["min_risk"], atr) <= risk <= resolve_dist(sc["max_risk"], atr)):
+                continue
+            setups.append({"placed_ns": int(z["known_ns"]), "dir": d, "fvg_tf": tf, "day": day, "entry": e, "stop": stop,
+                           "risk": risk, "buf": buf, "level": set(broken)})
+    out = []
+    for x in setups:
+        t, d, day = x["placed_ns"], x["dir"], x["day"]
+        g = regime[day]
+        last_order = ctx.at(pd.DatetimeIndex([day]), 15 * 60 + 30)[0]
+        expire = last_order
+        if x["fvg_tf"] == "5min":
+            later = sorted(y["placed_ns"] for y in setups if y["fvg_tf"] == "15min" and y["dir"] == d and t < y["placed_ns"] < last_order)
+            if later:
+                expire = later[0]
+        row = {**x, "regime": int(g), "expire_ns": expire}
+        if g > 0:
+            r = int(np.searchsorted(start5, t)) - 1
+            names = ["pdh", "dh", "asia_h", "london_h", "ny_h", "sh1", "sh2", "sh3", "vah", "val"] if d > 0 else \
+                    ["pdl", "dl", "asia_l", "london_l", "ny_l", "sl1", "sl2", "sl3", "vah", "val"]
+            lvls = np.r_[lv[names].iloc[r].to_numpy(float), vwap_known_at(t, day)]
+            beyond = lvls[np.isfinite(lvls) & (d * lvls > d * (x["entry"] + d * x["risk"]))]
+            raw = (beyond.min() if d > 0 else beyond.max()) if len(beyond) else x["entry"] + 2 * d * x["risk"]
+            row["target"] = np.ceil(raw / tick - 1e-9) * tick if d > 0 else np.floor(raw / tick + 1e-9) * tick
+            row["trail_ns"] = []
+        else:
+            row["target"] = np.nan
+            opp = SW[-d]
+            later = opp[(opp["known_ns"] > t) & (opp["known_ns"] < flat_day[day])]
+            row["trail_ns"] = later["known_ns"].tolist()
+            p = later["price"].to_numpy(float)
+            row["trail_px"] = (np.floor((p - x["buf"]) / tick + 1e-9) * tick if d > 0 else np.ceil((p + x["buf"]) / tick - 1e-9) * tick).tolist()
+        out.append(row)
     return out
 
 
 def test_g5_finds_exactly_the_setups_the_text_describes(ctx, regime):
     it = breakout(ctx, regime)
-    days = pd.DatetimeIndex(sorted(set(it["tdate"])))[:60]
-    ref = _g5_reference(ctx, regime, days)
+    days = pd.DatetimeIndex(sorted(set(it["tdate"])))[:50]
+    ref = sorted(_g5_reference(ctx, regime, days), key=lambda r: (r["placed_ns"], r["fvg_tf"] != "15min", r["dir"]))
     got = it[it["tdate"].isin(days)].reset_index(drop=True)
-    assert len(ref) >= 20 and len(got) == len(ref)
-    ref = sorted(ref, key=lambda r: (r["placed_ns"], r["dir"]))
+    assert len(ref) >= 40 and len(got) == len(ref)
     for r, (_, g) in zip(ref, got.iterrows()):
-        assert (g["placed_ns"], g["dir"], g["regime"]) == (r["placed_ns"], r["dir"], r["regime"])
+        assert (g["placed_ns"], g["dir"], g["fvg_tf"], g["regime"]) == (r["placed_ns"], r["dir"], r["fvg_tf"], r["regime"])
+        assert set(g["level"].split("+")) == r["level"]
         assert g["entry"] == pytest.approx(r["entry"]) and g["stop"] == pytest.approx(r["stop"])
+        assert g["expire_ns"] == r["expire_ns"]
         assert (np.isnan(g["target"]) and np.isnan(r["target"])) or g["target"] == pytest.approx(r["target"])
         assert list(g["trail_ns"]) == r["trail_ns"]
         if r["trail_ns"]:
             assert np.allclose(g["trail_px"], r["trail_px"])
-        assert g["exit_style"] == ("fixed" if r["regime"] > 0 else "trail")
-        assert g["entry_type"] == "limit" and g["expire_ns"] <= g["placed_ns"] + 60 * NS_PER_MIN
-    assert {"fixed", "trail"} <= set(got["exit_style"])
+        assert g["exit_style"] == ("fixed" if r["regime"] > 0 else "trail") and g["entry_type"] == "limit"
+    assert {"fixed", "trail"} <= set(got["exit_style"]) and {"5min", "15min"} <= set(got["fvg_tf"])
+    assert (got["replaced_at"] > 0).any() and got["level"].str.contains("vwap|vah|val").any()
+
+
+def test_g5_a_15_minute_setup_replaces_a_waiting_5_minute_order(ctx, regime):
+    it = breakout(ctx, regime)
+    rep = it[it["replaced_at"] > 0]
+    assert len(rep) >= 3 and (rep["fvg_tf"] == "5min").all()
+    for _, r in rep.iterrows():
+        m = it[(it["fvg_tf"] == "15min") & (it["dir"] == r["dir"]) & (it["placed_ns"] == r["replaced_at"])]
+        assert len(m) == 1 and m["tdate"].iat[0] == r["tdate"]           # cancelled exactly when the 15m order goes in
+        assert r["expire_ns"] == r["replaced_at"] > r["placed_ns"]
+    same_time = it.groupby("placed_ns")["fvg_tf"].agg(list)
+    for tfs in same_time[same_time.map(len) > 1]:
+        assert tfs == sorted(tfs, key=lambda t: t != "15min")            # 15m first when both appear at once
 
 
 def test_g5_swap_keeps_entries_and_swaps_exits(ctx, regime):
@@ -298,10 +327,26 @@ def test_every_decision_is_reproducible_from_data_before_placement(cfg, data, ct
                 same &= trunc["level"] == row["level"]
             match = trunc[same]
             assert len(match) == 1, f"{h.id}: order at {cut} not reproducible from data before it"
-            cols = ["stop", "risk_unit", "ref_price"] + (["entry", "target", "expire_ns", "exit_style"] if h.matched == 0 else [])
+            cols = ["stop", "risk_unit", "ref_price"] + (["entry", "target", "exit_style", "fvg_tf"] if h.matched == 0 else [])
             pd.testing.assert_series_equal(match.iloc[0][cols], row[cols], check_names=False, obj=h.id)
             checked += 1
     assert checked >= 2 * len(HYPOTHESES)
+
+
+def test_the_15_minute_replacement_is_known_from_data_before_it(cfg, data, ctx, regime):
+    """The cancel time of a replaced 5m order is a real 15m order placement, rebuilt from data before that time."""
+    a, b, flags = data
+    full = breakout(ctx, regime)
+    rep = full[full["replaced_at"] > 0]
+    for _, r in rep.iloc[[0, len(rep) // 2, -1]].iterrows():
+        cut = pd.Timestamp(int(r["replaced_at"]), tz="UTC")
+        F_t, _ = dev_frames(cfg, a[a.index < cut], b[b.index < cut], flags, end="2100-01-01")
+        trunc = breakout(Ctx(F_t, cfg), regime)
+        new = trunc[(trunc["placed_ns"] == r["replaced_at"]) & (trunc["dir"] == r["dir"]) & (trunc["fvg_tf"] == "15min")]
+        ref = full[(full["placed_ns"] == r["replaced_at"]) & (full["dir"] == r["dir"]) & (full["fvg_tf"] == "15min")]
+        assert len(new) == 1 and new["entry"].iat[0] == ref["entry"].iat[0] and new["stop"].iat[0] == ref["stop"].iat[0]
+        old = trunc[(trunc["placed_ns"] == r["placed_ns"]) & (trunc["dir"] == r["dir"]) & (trunc["fvg_tf"] == "5min")]
+        assert old["expire_ns"].iat[0] == r["replaced_at"]
 
 
 def test_trailing_updates_known_by_a_time_do_not_change_with_later_data(cfg, data, ctx, regime):
@@ -333,13 +378,13 @@ def test_explore_family_is_ten_tests_and_report_renders(explore_res):
     assert len(res.rows) == 10 and {r["kind"] for r in res.rows} == {"main", "contrast"}
     assert all(r["adjustment"] == "Holm across 10 tests" and r["study"] == "gamma" for r in res.rows)
     g5 = res.trades["G5"]
-    assert set(g5["variant"]) == {"matched", "swapped"} and len(res.by_regime) == 2
+    assert set(g5["variant"]) == {"matched", "swapped"} and len(res.by_regime) == 4
     for r in res.rows:
         if r["kind"] == "main" and BY_ID[r["hypothesis"]].matched:
             t = res.trades[r["hypothesis"]]
             assert r["trades"] == int((t["regime"] == BY_ID[r["hypothesis"]].matched).sum())
     txt = stage_report(res)
-    assert "Contrasts" in txt and "G5 by regime" in txt
+    assert "Contrasts" in txt and "G5 by regime and by FVG timeframe" in txt
 
 
 def test_random_walk_shows_no_gross_edge(explore_res):
