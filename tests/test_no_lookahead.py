@@ -158,7 +158,7 @@ def test_each_order_is_reproducible_from_data_before_its_placement(cfg, series, 
 @pytest.mark.parametrize("name", ["baseline", "baseline_no_fvg"])
 def test_random_walk_shows_no_edge_before_costs(cfg, name):
     cv = _variant(cfg, name)
-    F = _features(cv, *_series(cv, "2019-01-02", "2020-12-31", 3))
+    F = _features(cv, *_series(cv, "2018-01-02", "2020-12-31", 3))
     it, _ = build_intents(F, cv)
     tr, _ = simulate(Market.from_frame(F.a1), it, EngineSettings.from_cfg(cv))
     assert len(tr) > 300

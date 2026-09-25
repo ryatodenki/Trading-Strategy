@@ -71,6 +71,9 @@ def variant_plan(base_cfg: dict, groups: tuple[str, ...]) -> list[tuple[str, str
     if "add_one" in groups:
         for name, ov in v["add_one"].items():
             plan.append(("add_one", f"+{name}", ov, apply_overrides(base_cfg, ov)))
+    if "confirm" in groups:
+        for name, ov in v["confirm"].items():
+            plan.append(("confirm", f"confirm {name.replace('_', ' ')}", ov, apply_overrides(base_cfg, ov)))
     full_cfg = apply_overrides(base_cfg, v["full"])
     if "full" in groups:
         plan.append(("full", "full", v["full"], full_cfg))
@@ -84,7 +87,7 @@ def variant_plan(base_cfg: dict, groups: tuple[str, ...]) -> list[tuple[str, str
 
 
 def run_suite(F: Features, base_cfg: dict, start, end,
-              groups: tuple[str, ...] = ("baseline", "add_one", "full", "remove_one", "engine_checks")) -> list[RunResult]:
+              groups: tuple[str, ...] = ("baseline", "add_one", "confirm", "full", "remove_one", "engine_checks")) -> list[RunResult]:
     mk = Market.from_frame(F.a1)
     return [run_one(F, c, name, start, end, group, ov, mk=mk) for group, name, ov, c in variant_plan(base_cfg, groups)]
 

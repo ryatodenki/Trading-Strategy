@@ -2,18 +2,22 @@
 
 This turns a discretionary MNQ (Micro Nasdaq-100) setup into exact, testable
 rules and measures which parts, if any, have an edge after costs:
-key level + fair value gap + SMT divergence vs MES, plus mood, structure,
+key level + fair value gap, confirmed by SMT vs MES on session levels or by a
+trending market, plus mood, structure,
 VWAP and value area.
 
 **Research only.** Nothing here connects to a broker or places orders.
 
 | Stage | Status |
 |---|---|
-| Step 0 — data pipeline (download / import, rolls, sessions, validation) | built and tested; **waiting for real data** |
+| Step 0 — data pipeline (download / import, rolls, sessions, validation) | done: Databento 2010 → 2026-09 → [results/real/data_validation.md](results/real/data_validation.md) |
 | Step 1 — rule definitions + example charts | built; **definitions awaiting your review** → [DEFINITIONS.md](DEFINITIONS.md) |
 | Step 2 — backtest engine (fills, costs, no lookahead) | built and tested |
-| Step 3 — baseline, add-one, remove-one variants | built; demo run on synthetic data only |
-| Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; demo run on synthetic data only |
+| Step 3 — baseline, add-one, remove-one variants | **run on real data (2010–2022): every variant loses about 0.15–0.2R per trade after costs; the baseline does no better than random entries (p = 0.73)** → [results/real/step3_variants.md](results/real/step3_variants.md) |
+| Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; not run on real data (nothing to tune yet); **holdout untouched** |
+| Published-strategy candidates ([STRATEGIES.md](STRATEGIES.md)) | **15 declared strategies run once on 2010–2022: none qualifies as a finalist**; holdout untouched → [results/real/strategies_dev.md](results/real/strategies_dev.md) |
+| Pattern search ([PATTERNS.md](PATTERNS.md)): explore / validate / final split | **9 hypotheses on explore (2010-06 → 2018-08): nothing passed**; validate and final test unused → [results/real/patterns/](results/real/patterns/README.md) |
+| Gamma regime study ([GAMMA.md](GAMMA.md)): SqueezeMetrics GEX as a regime switch, same splits | **5 hypotheses (10 tests) on explore: nothing passed** → [explore.md](results/real/gamma/explore.md); **round 2 (wider G5 stops) on MNQ 2019-07 → 2022-12: nothing passed** → [mnq.md](results/real/gamma/mnq.md); final test unused |
 
 Everything under `results/synthetic/` comes from a **random walk**. It proves the
 pipeline runs and has no lookahead: a random walk shows no edge, and it
@@ -120,6 +124,9 @@ python -m mnqbt charts --dataset real --variant baseline --n 9   # Step 1: check
 python -m mnqbt suite --dataset real                              # Step 3 (development period only)
 python -m mnqbt walkforward --dataset real                        # Step 4 (development period only)
 python -m mnqbt holdout --dataset real --variant baseline --note "final"   # Step 4: ONE look at recent data
+python -m mnqbt strategies --dataset real                         # STRATEGIES.md candidates, development period only
+python -m mnqbt gex-download                                     # SqueezeMetrics daily GEX, once, into datastore/gex/ (git-ignored)
+python -m mnqbt gamma --stage explore                            # GAMMA.md study; then validate / mes; final needs --unlock-final
 ```
 
 Variant definitions live in [config/variants.yaml](config/variants.yaml). Every
@@ -161,10 +168,11 @@ The first version of the test only caught one of the first three. That's why it'
 
 ```
 config/            default.yaml (all parameters), variants.yaml (Step 3), news_days.csv
-mnqbt/data/        databento_fetch, importers, continuous (rolls), sessions, calendar, validate, build, synthetic
+mnqbt/data/        databento_fetch, importers, continuous (rolls), sessions, calendar, validate, build, synthetic, gex (gamma)
 mnqbt/rules/       bars, swings, structure, levels, fvg, smt, mood, vwap, profile, news, features, setups
 mnqbt/backtest/    engine (fills/costs), research (variants, grid, walk-forward, holdout), random_bench
-mnqbt/reports/     metrics (stats, bootstrap CIs, breakdowns), charts, report (markdown)
+mnqbt/reports/     metrics (stats, bootstrap CIs, multiple-testing corrections, breakdowns), charts, report (markdown)
+mnqbt/strategies/  published-research candidates (STRATEGIES.md): rules, random-entry benchmark, runner; pattern search (PATTERNS.md) and gamma study (GAMMA.md)
 tests/             FVG, swings/structure, sessions/levels, SMT, fills, rolls, profile/VWAP, no-lookahead
 results/           committed reports (synthetic demo now; real data later)
 ```

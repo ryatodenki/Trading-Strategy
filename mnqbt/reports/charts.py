@@ -98,8 +98,9 @@ def plot_setup(F, cfg: dict, trade: pd.Series, path: Path, tf: str = "5min", bef
     # key level
     lv_tbl = F.levels(cfg, get(cfg, "rules.smt.timeframe"))
     name = str(trade.get("level", ""))
+    session_smt = bool(str(trade.get("smt_level") or ""))
     if name and name in lv_tbl:
-        lvl = float(lv_tbl[name].iloc[p_trig])
+        lvl = float(trade["smt_level_a"]) if session_smt else float(lv_tbl[name].iloc[int(trade["trig_level_pos"])])
         ax1.axhline(lvl, color=MUTED, linewidth=1.2, zorder=1)
         ax1.text(xr - 0.5, lvl, f" {_label(name)}  {lvl:,.2f}", color=INK2, fontsize=8, va="bottom", ha="right")
 
@@ -133,9 +134,20 @@ def plot_setup(F, cfg: dict, trade: pd.Series, path: Path, tf: str = "5min", bef
         ax1.text(x0 - 0.4, trade["fvg_top"] if d < 0 else trade["fvg_bottom"], f" {tf} FVG", color=INK2, fontsize=8,
                  va="bottom" if d < 0 else "top")
 
-    # SMT: connect the two swing extremes on each instrument
-    col = "high" if d < 0 else "low"
-    if trade["trig_prev_pos"] >= 0:
+    if session_smt:
+        # session SMT: the same level on MES, and which index took its level
+        lb, where = float(trade["smt_level_b"]), _label(str(trade["smt_level"]))
+        mnq_took = trade["smt_leader"] == "MNQ"
+        ax2.axhline(lb, color=MAGENTA, linewidth=1.4, zorder=2)
+        ylo, yhi = ax2.get_ylim()
+        pad = 0.05 * (yhi - ylo)
+        ax2.set_ylim(min(ylo, lb - pad), max(yhi, lb + pad))
+        ax2.text(0.2, lb, f"MES {where} {lb:,.2f}: {'not taken' if mnq_took else 'taken'}  (SMT)", color=INK, fontsize=8.5,
+                 va="bottom" if d < 0 else "top")
+        ax1.text(off(p_trig) + 0.6, trade["extreme"], f"MNQ {'took' if mnq_took else 'did not take'} its {where}", color=INK,
+                 fontsize=8.5, va="bottom" if d < 0 else "top")
+    # swing SMT: connect the two swing extremes on each instrument
+    if get(cfg, "rules.smt.mode") == "swing" and trade["trig_prev_pos"] >= 0:
         xa = [off(p_prev), off(p_trig)]
         ya = [trade["prev_extreme"], trade["extreme"]]
         ax1.plot(xa, ya, color=MAGENTA, linewidth=2, zorder=5)
@@ -176,7 +188,8 @@ def plot_setup(F, cfg: dict, trade: pd.Series, path: Path, tf: str = "5min", bef
         f"{side} · {td.date()} ({et[0].strftime('%a')}) · {trade.get('fill_session', '')} session · "
         f"result {trade['r_net']:+.2f}R net, ${trade['pnl_usd']:+,.2f} ({trade['exit_reason']})"
     )
-    sub = f"Times ET · {tf} candles · key level: {_label(name) if name else 'none'} · SMT leader: {trade.get('smt_leader') or '—'}"
+    sub = (f"Times ET · {tf} candles · key level: {_label(name) if name else 'none'} · confirmed by: {trade.get('confirm', '—')}"
+           f" · SMT leader: {trade.get('smt_leader') or '—'}")
     fig.text(0.012, 0.985, title, color=INK, fontsize=11.5, va="top", ha="left")
     fig.text(0.012, 0.952, sub, color=INK2, fontsize=8.5, va="top", ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.93))

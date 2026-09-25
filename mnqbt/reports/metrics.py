@@ -14,6 +14,7 @@ BREAKDOWNS = {
     "direction": "direction",
     "vol regime": "vol_state",
     "key level": "level",
+    "confirmation": "confirm",
     "SMT leader": "smt_leader",
     "VWAP side": "vwap_side",
     "value area": "va_loc",
@@ -72,6 +73,46 @@ def bootstrap_mean_ci(x: np.ndarray, reps: int, level: float, groups: np.ndarray
         means = sums[pick].sum(axis=1) / counts[pick].sum(axis=1)
     a = (1 - level) / 2
     return float(np.quantile(means, a)), float(np.quantile(means, 1 - a))
+
+
+def bootstrap_p_positive(x: np.ndarray, reps: int, groups: np.ndarray | None = None, seed: int = 0) -> float:
+    """One-sided p-value of H0: mean <= 0, from the same (block) bootstrap as ``bootstrap_mean_ci``:
+    the share of resampled means <= 0, with +1 smoothing."""
+    x = np.asarray(x, float)
+    if len(x) < 2:
+        return np.nan
+    rng = np.random.default_rng(seed)
+    codes, uniq = pd.factorize(groups if groups is not None else np.arange(len(x)))
+    sums, counts = np.bincount(codes, weights=x), np.bincount(codes)
+    means = np.empty(reps)
+    for k in range(0, reps, 1000):  # chunks keep memory small for long samples
+        pick = rng.integers(0, len(uniq), size=(min(1000, reps - k), len(uniq)))
+        means[k:k + len(pick)] = sums[pick].sum(axis=1) / counts[pick].sum(axis=1)
+    return float((1 + (means <= 0).sum()) / (1 + reps))
+
+
+def holm(p: np.ndarray) -> np.ndarray:
+    """Holm-Bonferroni adjusted p-values (family-wise error control); NaN stays NaN and is not counted."""
+    p = np.asarray(p, float)
+    out = np.full(len(p), np.nan)
+    ok = np.flatnonzero(~np.isnan(p))
+    m = len(ok)
+    order = ok[np.argsort(p[ok], kind="stable")]
+    adj = np.minimum(1.0, np.maximum.accumulate((m - np.arange(m)) * p[order]))
+    out[order] = adj
+    return out
+
+
+def benjamini_hochberg(p: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg q-values (false discovery rate); NaN stays NaN and is not counted."""
+    p = np.asarray(p, float)
+    out = np.full(len(p), np.nan)
+    ok = np.flatnonzero(~np.isnan(p))
+    m = len(ok)
+    order = ok[np.argsort(p[ok], kind="stable")]
+    q = p[order] * m / np.arange(1, m + 1)
+    out[order] = np.minimum(1.0, np.minimum.accumulate(q[::-1])[::-1])
+    return out
 
 
 def _t_pvalue(x: np.ndarray) -> float:

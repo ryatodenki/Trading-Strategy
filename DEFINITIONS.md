@@ -51,41 +51,49 @@ At any moment, these are the levels that exist, all built from data before that 
 | Recent swing highs / lows | The 3 most recent confirmed 15-minute swing highs and lows. |
 | Prior VAH / VAL | Only when the value-area piece is switched on (see §8). |
 
-"**At a key level**" means an MNQ swing extreme is within **max(3 pts, 0.03 × ATR)** of one of these levels, about 10 points at 2025 prices. Swing highs are tested against high-type levels and swing lows against low-type levels.
+"**At a key level**" means the MNQ swing extreme **swept** one of these levels: it traded *through* the level by at least 1 tick and at most **max(3 pts, 0.03 × ATR)**, about 10 points at 2025 prices. Swing highs are tested against high-type levels and swing lows against low-type levels. If several were swept, the one closest to the extreme is reported.
 
-An optional **sweep** mode is available: the swing must trade *through* the level by at least 1 tick and at most the tolerance.
+The levels used are the ones that existed **before the SMT's first swing**. So a day high set by the SMT's own first swing doesn't count; the day high from before it does.
+
+The older **near** mode (`rules.levels.mode: near`) is still available: the swing extreme only has to be within the tolerance of a level, on either side.
 
 ## 3. Fair value gap (entry zone)
 
 - **Definition.** Three consecutive candles on the 5-minute chart (15-minute as a variant), in the same trading day with no missing candle between.
-  - **Bullish FVG:** candle 3's low is above candle 1's high. The zone runs from candle 1's high up to candle 3's low.
-  - **Bearish FVG:** candle 3's high is below candle 1's low.
-- **Minimum size.** max(1 pt, 0.01 × ATR), about 3.5 points at 2025 prices.
+  - **Bullish FVG:** candle 3's low is above candle 1's high, and **all three candles close up** (close above open). The zone runs from candle 1's high up to candle 3's low.
+  - **Bearish FVG:** candle 3's high is below candle 1's low, and **all three candles close down**.
+- **Minimum size.** max(1 pt, 0.03 × ATR): medium and big gaps only, about 8–11 points at 2024–2025 prices. That keeps roughly the largest third of three-candle gaps.
 - **Known** when candle 3 closes. **Valid** for 12 candles after that (1 hour on 5m).
 
-## 4. SMT divergence
+## 4. SMT divergence (a confirmation, not a requirement)
 
-For a **bearish** SMT:
+SMT is measured on the **session timeframe** (`rules.smt.mode: session`): a level both indices share, made earlier, is tested again later. For a **bearish** SMT:
 
-- MNQ has a confirmed 5-minute swing high. Its previous swing high is 3 to 24 candles earlier (15 minutes to 2 hours).
-- The two indices disagree:
-  - MNQ's new high is above its previous one while MES's is not, **or**
-  - MES makes the higher high while MNQ does not.
-- MES's high is read within ±1 candle of each MNQ swing, so a one-candle timing difference doesn't count as divergence.
-- Bullish SMT mirrors this with swing lows.
-- The SMT is known when the MNQ swing is confirmed, 2 candles after it.
+- **Shared levels:** the prior-day high and the most recent completed Asia, London and NY highs, each measured on MNQ and on MES separately.
+- **The indices disagree at MNQ's 5m swing high:**
+  - MNQ takes out its level (e.g. its London high) while MES stays at or below its own London high, **or**
+  - MES takes out its level while MNQ's swing stops short of its own, by at most the key-level tolerance.
+- **Minimum size.** Taking out a level means trading through it by at least **max(2 ticks, 0.01 × that index's own ATR)**: about 3.5 points on MNQ and 0.75 on MES at 2025 prices. MNQ's break must also stay within the key-level tolerance, as for any sweep (§2).
+- MES's high is read within ±1 candle of MNQ's swing, so a one-candle timing difference doesn't count as divergence.
+- Bullish SMT mirrors this with lows.
+- The SMT is known when the MNQ swing is confirmed, 2 candles after it. An SMT happens at a shared level, so it also counts as being at a key level.
+
+The earlier 5-minute version is still available as `rules.smt.mode: swing`: two MNQ 5m swings 15 minutes to 2 hours apart, one index making a higher high and the other not.
 
 ## 5. Setup assembly (the baseline)
 
-1. **Trigger.** MNQ makes a confirmed 5m swing. That swing is **at a key level** and shows **SMT** with MES. A swing high means a short setup; a swing low means a long.
+1. **Trigger.** MNQ makes a confirmed 5m swing that **sweeps a key level** (§2) or makes a session SMT (§4). A swing high means a short setup; a swing low means a long.
+   - **Confirmation:** at least one of the following (`setup.confirm`):
+     - **SMT** with MES (§4);
+     - **trend:** a trending, clearly one-sided market in the trade direction. The 1h structure agrees (§1), the market is not choppy (§0) and the entry is on the trend side of VWAP (§7). In an uptrend this means buying a sweep of a low, with price above VWAP.
 2. **Entry zone.** The first FVG in the trade direction that:
    - starts at or after the swing candle;
-   - is confirmed within **60 minutes** of the SMT;
+   - is confirmed within **60 minutes** of the trigger;
    - is still fresh when the order is placed, with price not having returned to the entry yet.
-3. **Order.** Placed when both the SMT and the FVG are known.
+3. **Order.** Placed when both the trigger and the FVG are known.
    - Limit at the **50% level** of the FVG (a setting: 0 = near edge, 1 = far edge).
    - Rounded one tick deeper when it falls between ticks.
-4. **Stop.** One buffer beyond the **swept swing extreme**, buffer = max(1 pt, 0.01 × ATR).
+4. **Stop.** One buffer beyond the **trigger swing's extreme**, buffer = max(1 pt, 0.01 × ATR).
    - Setups are skipped when the risk is under max(2 pts, 0.02 × ATR) (costs would dominate) or over 0.4 × ATR.
    - Variant: stop beyond the far edge of the FVG.
 5. **Target.** **2R** fixed.
@@ -155,18 +163,14 @@ For a **bearish** SMT:
 
 ## Judgment calls I made — please confirm or change
 
-1. **Key-level tolerance looks loose.** On synthetic data, about half of all 5m swings pass the key-level test, because with ~12 levels one is often nearby. Options:
-   - require a **sweep** (`rules.levels.mode: sweep`);
-   - shrink the tolerance;
-   - drop the running day high/low and the 3 swing levels from the list.
-
-   Which matches your marking?
+1. **Key-level tolerance looks loose.** ~~Options: sweep, shrink the tolerance, or drop the running day high/low and swing levels.~~ **Decided: require a sweep**, plus a minimum SMT size (§2, §4).
+   - Follow-up, **decided:** the level must have existed before the SMT's first swing. Before this rule, 23% of SMT sweeps were of the SMT's own first swing (~40% for the running day high/low), so the key level added nothing to the SMT there.
 2. **Which sessions to trade.** Default is all three, so the by-session table can show where it works. If you only trade London + NY, that should be the baseline from the start, not a finding after the fact.
 3. **Structure timeframe.** Default is 1-hour swings (2 bars each side). Do you read order flow on 1h, 4h, or 15m?
 4. **VWAP direction.** Is "long above VWAP" (trend) or "long below VWAP" (discount) the rule you use?
 5. **VAH/VAL role.** Should they be extra key levels (current default) or a premium/discount location filter?
 6. **Stop placement.** Default is beyond the swing that made the SMT. Do you use that, or beyond the FVG?
-7. **SMT timeframe.** 5m swings with 2 bars each side, previous swing 15 min–2 h back. Do you look for SMT on 1m, 5m or 15m?
+7. **SMT timeframe.** **Decided:** session levels (e.g. London high tested in NY), not 5m swings. SMT is a confirmation; a trending one-sided market is the alternative (§5).
 8. **One trade at a time.** Setups that appear while an order is working or a trade is open are skipped, not queued.
 9. **Flatten at 15:55** every day. A trade opened in Asia can run into the NY session.
 10. **Inducement** is not implemented, as requested.

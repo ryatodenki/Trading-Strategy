@@ -25,14 +25,22 @@ Later bars:
   * still open at ``flatten_ns``: market exit at that bar's open - slippage.
 
 Market entry (no-FVG variant): next bar open + slippage; target = entry + R * risk.
-Costs: commission+fees per contract per side, both sides.
+No stop / no target (strategies/): ``stop`` / ``target`` NaN.  An order with a
+finite ``risk_unit`` (points) has its R measured in that unit instead of the
+stop distance (required when there is no stop).
+Trailing stop (optional ``trail_ns`` / ``trail_px``): each update moves the stop to its
+price from the first bar starting at or after its time, only if that time is after the
+fill bar started and only if it tightens the stop; a gap through it fills at the open.
+Costs: commission+fees per contract per side, both sides.  A position held
+across a contract roll (``Market.roll_ns``) pays a close and a reopen there:
+2 x commission and 2 x market slippage.
 One position at a time: an intent placed while an order is working or a
 position is open is skipped (and counted).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 import numpy as np
@@ -45,7 +53,7 @@ INT_MAX = np.iinfo(np.int64).max
 TRADE_COLUMNS = [
     "intent", "dir", "placed_ns", "fill_ns", "exit_ns", "entry", "stop", "target", "risk_pts", "exit_price", "exit_reason",
     "ambiguous_bar", "bars_held", "mfe_r", "mae_r", "gross_pts", "net_pts", "commission", "pnl_usd", "gross_usd",
-    "slippage_usd", "r_gross", "r_net", "fill_session",
+    "slippage_usd", "r_gross", "r_net", "fill_session", "rolls", "stop_last",
 ]
 
 
@@ -83,9 +91,10 @@ class Market:
     low: np.ndarray
     close: np.ndarray
     session: np.ndarray
+    roll_ns: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int64))  # first bar of each new contract
 
     @classmethod
-    def from_frame(cls, m1: pd.DataFrame) -> "Market":
+    def from_frame(cls, m1: pd.DataFrame, roll_ns: np.ndarray | None = None) -> "Market":
         from mnqbt.timeutil import ns
 
         return cls(
@@ -95,7 +104,12 @@ class Market:
             low=m1["low"].to_numpy(float),
             close=m1["close"].to_numpy(float),
             session=m1["session"].astype(str).to_numpy() if "session" in m1 else np.full(len(m1), ""),
+            roll_ns=np.sort(np.asarray(roll_ns if roll_ns is not None else [], dtype=np.int64)),
         )
+
+    def rolls_between(self, t0: int, t1: int) -> int:
+        """Number of contract rolls in (t0, t1]: a position filled at t0 and exited at t1 is rolled that often."""
+        return int(np.searchsorted(self.roll_ns, t1, side="right") - np.searchsorted(self.roll_ns, t0, side="right"))
 
 
 Resolver = Callable[[int, int, float, float], str | None]
@@ -109,11 +123,25 @@ def _first(mask: np.ndarray) -> int:
     return i if mask[i] else INT_MAX
 
 
+def stop_path(ts: np.ndarray, g0: int, g_end: int, d: int, stop: float, t_upd: np.ndarray, px_upd: np.ndarray) -> np.ndarray:
+    """Stop in force in each bar g0..g_end-1: ``stop``, moved to each update's price from the first bar
+    starting at or after the update time (updates timed after bar g0 started only), never loosened."""
+    m = max(g_end - g0, 1)
+    y = np.full(m, -np.inf)                       # d * price, so "tighter" is always "larger"
+    t_upd, px_upd = np.asarray(t_upd, np.int64), np.asarray(px_upd, float)
+    keep = t_upd > ts[g0]
+    k = np.searchsorted(ts[g0:g0 + m], t_upd[keep], side="left")
+    ok = k < m
+    np.maximum.at(y, k[ok], d * px_upd[keep][ok])
+    return d * np.maximum.accumulate(np.maximum(d * stop, y))
+
+
 def exit_scan(
     mk: Market, g0: int, g_flat: int, d: int, stop: float, target: float, st: EngineSettings,
-    limit_fill_bar: bool, resolver: Resolver | None = None,
+    limit_fill_bar: bool, resolver: Resolver | None = None, path: np.ndarray | None = None,
 ) -> tuple[int, str, float, bool]:
-    """Walk bars from the fill bar g0 until exit.  Returns (exit_bar, reason, raw_exit_price, ambiguous)."""
+    """Walk bars from the fill bar g0 until exit.  Returns (exit_bar, reason, raw_exit_price, ambiguous).
+    ``path``: stop in force in each bar from g0 (trailing stop); the fill bar always uses ``stop``."""
     h, l, c, o = mk.high, mk.low, mk.close, mk.open
     through = st.fill_mode == "through"
     g_flat = min(g_flat, len(mk.ts))
@@ -129,11 +157,12 @@ def exit_scan(
             return g0, "target", target, False
         start = g0 + 1
     H, L = h[start:g_flat], l[start:g_flat]
+    S = stop if path is None else path[start - g0:g_flat - g0]
     if d > 0:
-        fs = _first(L <= stop)
+        fs = _first(L <= S)
         ft = _first(H > target if through else H >= target)
     else:
-        fs = _first(H >= stop)
+        fs = _first(H >= S)
         ft = _first(L < target if through else L <= target)
     if fs == INT_MAX and ft == INT_MAX:
         if g_flat < len(mk.ts):
@@ -150,7 +179,8 @@ def exit_scan(
         take_stop = fs < ft
     if take_stop:
         g = start + fs
-        raw = min(o[g], stop) if d > 0 else max(o[g], stop)
+        sg = stop if path is None else path[g - g0]
+        raw = min(o[g], sg) if d > 0 else max(o[g], sg)
         if limit_fill_bar and g == g0:
             raw = stop
         return g, "stop", raw, ambiguous
@@ -162,7 +192,7 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     """Simulate ONE order from placement to exit.  Returns (status, trade or None, busy_until_ns, event_ns).
 
     ``o_`` keys: placed_ns, dir, expire_ns, flatten_ns, stop, target, entry_type ('limit'|'market'),
-    entry, target_src, target_r, [cancel_reason_at_expiry].
+    entry, target_src, target_r, [cancel_reason_at_expiry], [risk_unit: points per R; required when stop is NaN].
     """
     ts, o, h, l = mk.ts, mk.open, mk.high, mk.low
     n = len(ts)
@@ -212,7 +242,13 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     risk = d * (entry - stop)
     if risk <= 0 or d * (target - entry) <= 0:
         return "invalid_levels", None, placed, int(ts[g0])
-    gx, reason, raw_exit, amb = exit_scan(mk, g0, i_flat, d, stop, target, st, limit_bar, resolver)
+    unit = float(o_.get("risk_unit", np.nan))
+    if np.isfinite(unit):
+        risk = unit   # the order's own R unit (stopless strategies; patterns measure every trade in 10% of ATR)
+    path, tn = None, o_.get("trail_ns")
+    if isinstance(tn, (np.ndarray, list, tuple)) and len(tn):
+        path = stop_path(ts, g0, min(i_flat, n), d, stop, tn, o_["trail_px"])
+    gx, reason, raw_exit, amb = exit_scan(mk, g0, i_flat, d, stop, target, st, limit_bar, resolver, path)
     if reason == "stop":
         exit_px = raw_exit - d * st.slippage_ticks_stop * st.tick
     elif reason in ("flatten", "end_of_data"):
@@ -222,9 +258,10 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     seg_h, seg_l = h[g0:gx + 1], l[g0:gx + 1]
     mfe = (seg_h.max() - entry) if d > 0 else (entry - seg_l.min())
     mae = (entry - seg_l.min()) if d > 0 else (seg_h.max() - entry)
-    commission = 2 * st.commission_per_side * st.contracts
+    rolls = mk.rolls_between(int(ts[g0]), int(ts[gx]))
+    commission = 2 * (1 + rolls) * st.commission_per_side * st.contracts
     gross_pts = d * (raw_exit - (entry if limit_bar else o[g0]))
-    net_pts = d * (exit_px - entry)
+    net_pts = d * (exit_px - entry) - 2 * rolls * st.slippage_ticks_market * st.tick
     pnl_usd = net_pts * st.point_value * st.contracts - commission
     risk_usd = risk * st.point_value * st.contracts
     trade = {
@@ -252,6 +289,8 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
         "r_gross": gross_pts / risk,
         "r_net": pnl_usd / risk_usd,
         "fill_session": mk.session[g0],
+        "rolls": rolls,
+        "stop_last": stop if path is None else float(path[min(gx - g0, len(path) - 1)]),
     }
     return "filled", trade, int(ts[gx]) + NS_PER_MIN, int(ts[g0])
 
@@ -278,7 +317,7 @@ def simulate(mk: Market, intents: pd.DataFrame, st: EngineSettings, resolver: Re
 
     trades_df = pd.DataFrame(trades, columns=TRADE_COLUMNS)
     if trades_df.empty:
-        ints = {"intent", "dir", "placed_ns", "fill_ns", "exit_ns", "bars_held"}
+        ints = {"intent", "dir", "placed_ns", "fill_ns", "exit_ns", "bars_held", "rolls"}
         trades_df = trades_df.astype({c: ("int64" if c in ints else "bool" if c == "ambiguous_bar" else "object"
                                           if c in ("exit_reason", "fill_session") else "float64") for c in TRADE_COLUMNS})
     tag_cols = [c for c in intents.columns if c not in trades_df.columns]
