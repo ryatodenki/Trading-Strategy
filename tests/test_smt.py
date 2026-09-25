@@ -25,12 +25,11 @@ def _levels(a, **cols):
 A_HIGHS = [10, 11, 12, 20, 13, 12, 13, 14, 15, 22, 16, 14, 13]
 
 
-def _run(a_highs, b_highs, cfg, **lv):
+def _run(a_highs, b_highs, cfg, atr_b=50.0, **lv):
     cfg = apply_overrides(cfg, {"rules.smt.swing_n": 2, "rules.smt.align_window_bars": 1, "rules.smt.min_separation_bars": 3,
                                 "rules.smt.lookback_bars": 24, "rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
     a, b = _bars(a_highs), _bars(b_highs)
-    atr = np.full(len(a), 50.0)
-    t = detect_triggers(a, b, _levels(a, **lv), atr, cfg)
+    t = detect_triggers(a, b, _levels(a, **lv), np.full(len(a), 50.0), np.full(len(a), atr_b), cfg)
     return a, t[(t["dir"] == -1) & (t["pos"] == 9)]
 
 
@@ -70,7 +69,7 @@ def test_bullish_smt_on_lows(cfg):
     b_lows[9] = 11  # MES higher low
     cfg2 = apply_overrides(cfg, {"rules.levels.tolerance": {"points": 1.0, "atr_frac": 0.0}})
     a, b = _bars(lows + 3, lows), _bars(b_lows + 3, b_lows)
-    t = detect_triggers(a, b, _levels(a), np.full(len(a), 50.0), cfg2)
+    t = detect_triggers(a, b, _levels(a), np.full(len(a), 50.0), np.full(len(a), 50.0), cfg2)
     r = t[(t["dir"] == 1) & (t["pos"] == 9)].iloc[0]
     assert bool(r["smt"]) and r["smt_leader"] == "MNQ"
 
@@ -89,3 +88,28 @@ def test_sweep_mode_requires_trading_through_the_level(cfg):
     assert bool(t.iloc[0]["sweep_core"])
     _, t = _run(A_HIGHS, b_highs, cfg, pdh=22.5)   # 0.5 short of the level: near, but not a sweep
     assert bool(t.iloc[0]["near_core"]) and not bool(t.iloc[0]["sweep_core"])
+
+
+def test_smt_needs_minimum_break(cfg):
+    # min_size = max(0.5 pt, 1% of ATR 50) = 0.5: MNQ beating 20 by 1 tick is not SMT, by 2 ticks it is
+    b_highs = [10, 11, 12, 20, 13, 12, 13, 14, 15, 19, 16, 14, 13]
+    for top, smt in ((20.25, False), (20.5, True)):
+        a_highs = list(A_HIGHS)
+        a_highs[9] = top
+        _, t = _run(a_highs, b_highs, cfg)
+        assert bool(t.iloc[0]["smt"]) is smt
+
+
+def test_smt_minimum_uses_the_leaders_own_atr(cfg):
+    # MES leads by 2 pts: enough at an MES ATR of 50 (min 0.5), not at 400 (min 4)
+    a_highs = [10, 11, 12, 20, 13, 12, 13, 14, 15, 19, 16, 14, 13]
+    b_highs = [10, 11, 12, 20, 13, 12, 13, 14, 15, 22, 16, 14, 13]
+    assert bool(_run(a_highs, b_highs, cfg, atr_b=50.0)[1].iloc[0]["smt"])
+    assert not bool(_run(a_highs, b_highs, cfg, atr_b=400.0)[1].iloc[0]["smt"])
+
+
+def test_sweep_reports_the_swept_level_not_the_nearest(cfg):
+    b_highs = [10, 11, 12, 20, 13, 12, 13, 14, 15, 19, 16, 14, 13]
+    _, t = _run(A_HIGHS, b_highs, cfg, pdh=21.5, dh=22.25)   # extreme 22: dh is nearer but not traded through
+    r = t.iloc[0]
+    assert r["level_core"] == "dh" and r["sweep_level_core"] == "pdh" and r["sweep_depth_core"] == 0.5

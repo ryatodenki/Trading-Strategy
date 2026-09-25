@@ -51,9 +51,9 @@ At any moment, these are the levels that exist, all built from data before that 
 | Recent swing highs / lows | The 3 most recent confirmed 15-minute swing highs and lows. |
 | Prior VAH / VAL | Only when the value-area piece is switched on (see §8). |
 
-"**At a key level**" means an MNQ swing extreme is within **max(3 pts, 0.03 × ATR)** of one of these levels, about 10 points at 2025 prices. Swing highs are tested against high-type levels and swing lows against low-type levels.
+"**At a key level**" means the MNQ swing extreme **swept** one of these levels: it traded *through* the level by at least 1 tick and at most **max(3 pts, 0.03 × ATR)**, about 10 points at 2025 prices. Swing highs are tested against high-type levels and swing lows against low-type levels. If several were swept, the one closest to the extreme is reported.
 
-An optional **sweep** mode is available: the swing must trade *through* the level by at least 1 tick and at most the tolerance.
+The older **near** mode (`rules.levels.mode: near`) is still available: the swing extreme only has to be within the tolerance of a level, on either side.
 
 ## 3. Fair value gap (entry zone)
 
@@ -71,6 +71,7 @@ For a **bearish** SMT:
 - The two indices disagree:
   - MNQ's new high is above its previous one while MES's is not, **or**
   - MES makes the higher high while MNQ does not.
+- **Minimum size.** The index that makes the higher high must beat its previous high by at least **max(2 ticks, 0.01 × its own ATR)**: about 3.5 points on MNQ and 0.75 on MES at 2025 prices. The other index only has to fail to make a higher high; an exactly equal high counts as failing.
 - MES's high is read within ±1 candle of each MNQ swing, so a one-candle timing difference doesn't count as divergence.
 - Bullish SMT mirrors this with swing lows.
 - The SMT is known when the MNQ swing is confirmed, 2 candles after it.
@@ -155,12 +156,8 @@ For a **bearish** SMT:
 
 ## Judgment calls I made — please confirm or change
 
-1. **Key-level tolerance looks loose.** On synthetic data, about half of all 5m swings pass the key-level test, because with ~12 levels one is often nearby. Options:
-   - require a **sweep** (`rules.levels.mode: sweep`);
-   - shrink the tolerance;
-   - drop the running day high/low and the 3 swing levels from the list.
-
-   Which matches your marking?
+1. **Key-level tolerance looks loose.** ~~Options: sweep, shrink the tolerance, or drop the running day high/low and swing levels.~~ **Decided: require a sweep**, plus a minimum SMT size (§2, §4).
+   - Still open: on real data, the running day high/low and the 15m swings are still ~80% of the levels swept. In 23% of SMT sweeps the level swept is the SMT's own first swing (~40% for the running day high/low), so the key level adds nothing to the SMT there.
 2. **Which sessions to trade.** Default is all three, so the by-session table can show where it works. If you only trade London + NY, that should be the baseline from the start, not a finding after the fact.
 3. **Structure timeframe.** Default is 1-hour swings (2 bars each side). Do you read order flow on 1h, 4h, or 15m?
 4. **VWAP direction.** Is "long above VWAP" (trend) or "long below VWAP" (discount) the rule you use?

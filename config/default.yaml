@@ -127,7 +127,7 @@ rules:
     swing_count: 3             # most recent confirmed swing highs / lows kept as levels
     # near : the swing extreme is within `tolerance` of a level (either side)
     # sweep: the swing extreme traded THROUGH a level by at least 1 tick and at most `tolerance`
-    mode: near
+    mode: sweep
     tolerance: {points: 3.0, atr_frac: 0.03}
 
   fvg:
@@ -141,6 +141,9 @@ rules:
     lookback_bars: 24          # previous swing must be within this many bars
     min_separation_bars: 3     # ...and at least this far back
     align_window_bars: 1       # "same swing" on the other index = within +-1 bar (<= swing_n)
+    # the index that makes the higher high / lower low must beat its previous
+    # swing by at least this, in its OWN points and daily ATR (2 ticks ~ 1% ATR)
+    min_size: {points: 0.5, atr_frac: 0.01}
 
   vwap:
     anchor: trading_day        # trading_day (18:00) | session (resets at asia/london/ny start)

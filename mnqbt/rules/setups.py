@@ -72,8 +72,10 @@ def build_intents(F: Features, cfg: dict, start: str | None = None, end: str | N
         funnel["with SMT"] = int(keep.sum())
     trig = trig[keep].reset_index(drop=True)
     near = near[keep]
-    use_va_name = va_levels & (trig["dist_va"].fillna(np.inf).to_numpy() < trig["dist_core"].fillna(np.inf).to_numpy())
-    level_name = np.where(use_va_name, trig["level_va"].to_numpy(), trig["level_core"].to_numpy())
+    name_c, dist_c, name_v, dist_v = (("level_core", "dist_core", "level_va", "dist_va") if prox == "near" else
+                                      ("sweep_level_core", "sweep_depth_core", "sweep_level_va", "sweep_depth_va"))
+    use_va_name = va_levels & (trig[dist_v].fillna(np.inf).to_numpy() < trig[dist_c].fillna(np.inf).to_numpy())
+    level_name = np.where(use_va_name, trig[name_v].to_numpy(), trig[name_c].to_numpy())
     level_name = np.where(near, level_name, "")
 
     ts = F.ts
