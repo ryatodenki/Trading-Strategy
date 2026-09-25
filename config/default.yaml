@@ -166,7 +166,7 @@ rules:
 
   news:
     file: config/news_days.csv
-    kinds: [FOMC, NFP]         # add CPI etc. to the CSV and list them here
+    kinds: [FOMC, NFP, CPI]    # add more kinds to the CSV and list them here
     mode: day                  # day: no entries all day | window: +-window_minutes around release
     window_minutes: 30
 
