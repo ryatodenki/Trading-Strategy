@@ -46,10 +46,16 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     return df[ok].sort_index()
 
 
-def spike_mask(df: pd.DataFrame, cfg: dict, tick: float) -> np.ndarray:
-    """Bars whose wick is > spike_mult x rolling median range and reverts within the bar."""
+def _range_and_median(df: pd.DataFrame, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
+    """1m range and its rolling median over the previous spike_lookback bars."""
     rng = (df["high"] - df["low"]).to_numpy(float)
     med = pd.Series(rng).rolling(int(get(cfg, "validation.spike_lookback")), min_periods=30).median().shift(1).to_numpy()
+    return rng, med
+
+
+def spike_mask(df: pd.DataFrame, cfg: dict, tick: float) -> np.ndarray:
+    """Bars whose wick is > spike_mult x rolling median range and reverts within the bar."""
+    rng, med = _range_and_median(df, cfg)
     body_hi = np.maximum(df["open"].to_numpy(float), df["close"].to_numpy(float))
     body_lo = np.minimum(df["open"].to_numpy(float), df["close"].to_numpy(float))
     wick = np.maximum(df["high"].to_numpy(float) - body_hi, body_lo - df["low"].to_numpy(float))
@@ -57,8 +63,28 @@ def spike_mask(df: pd.DataFrame, cfg: dict, tick: float) -> np.ndarray:
     return (wick > mult * np.maximum(med, tick)) & (wick >= 20 * tick)
 
 
-def day_flags(df: pd.DataFrame, cfg: dict, tick: float) -> pd.DataFrame:
-    """Per-trading-date statistics and do-not-trade flags for a continuous series."""
+def partner_moved(index: pd.DatetimeIndex, partner: pd.DataFrame, cfg: dict, tick: float) -> np.ndarray:
+    """True where ``partner`` has a bar within ±1 minute whose range is >= spike_partner_mult x its own median.
+
+    A data release or crash moves both indices in the same minute; a bad tick
+    shows up in one only.  No partner bar in the window means no confirmation.
+    """
+    rng, med = _range_and_median(partner, cfg)
+    ratio = pd.Series(rng / np.maximum(med, tick), index=partner.index)
+    ratio = ratio[~ratio.index.duplicated(keep="last")]
+    best = np.zeros(len(index))
+    for k in (-1, 0, 1):
+        best = np.fmax(best, ratio.reindex(index + pd.Timedelta(minutes=k)).to_numpy())
+    return best >= float(get(cfg, "validation.spike_partner_mult"))
+
+
+def day_flags(df: pd.DataFrame, cfg: dict, tick: float, partner: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per-trading-date statistics and do-not-trade flags for a continuous series.
+
+    With ``partner`` (the other index), a spike bar that the partner matches
+    in the same minute is a real market move: it is counted in
+    ``spikes_matched`` and does not make the day a spike day.
+    """
     a = annotate(df[["open", "high", "low", "close", "volume"]], cfg) if "tdate" not in df else df
     ts_min = ns(a.index) // NS_PER_MIN
     td = a["tdate"].to_numpy()
@@ -66,13 +92,18 @@ def day_flags(df: pd.DataFrame, cfg: dict, tick: float) -> pd.DataFrame:
     gap = np.r_[0, np.diff(ts_min)] - 1
     gap = np.where(same_day, gap, 0)
     spikes = spike_mask(a, cfg, tick)
-    g = pd.DataFrame({"tdate": a["tdate"].to_numpy(), "et_min": a["et_min"].to_numpy(), "gap": gap, "spike": spikes})
+    matched = np.zeros(len(a), dtype=bool)
+    if partner is not None:
+        matched[spikes] = partner_moved(a.index[spikes], partner, cfg, tick)
+    g = pd.DataFrame({"tdate": a["tdate"].to_numpy(), "et_min": a["et_min"].to_numpy(), "gap": gap,
+                      "spike": spikes & ~matched, "matched": matched})
     flags = g.groupby("tdate").agg(
         n_bars=("gap", "size"),
         max_gap_min=("gap", "max"),
         n_gaps=("gap", lambda s: int((s > int(get(cfg, "validation.max_gap_minutes"))).sum())),
         last_et_min=("et_min", lambda s: int(s.iloc[-1])),
         spikes=("spike", "sum"),
+        spikes_matched=("matched", "sum"),
     )
     typical = flags["n_bars"].rolling(60, min_periods=5).median().shift(1).bfill()
     frac = float(get(cfg, "sessions.short_day_bar_fraction"))
@@ -132,7 +163,9 @@ def validation_report(
         f"- Short / holiday sessions (not traded): {int(flags['short'].sum())} "
         f"(of which early close before 16:00 ET: {int(flags['early_close'].sum())})",
         f"- Days with an intraday hole ≥ {get(cfg, 'validation.gap_day_exclude_minutes') if cfg else '?'} min (not traded): {int(flags['gap_day'].sum())}",
-        f"- Days with suspect spikes (not traded): {int(flags['spike_day'].sum())} ({int(flags['spikes'].sum())} bars)",
+        f"- Days with suspect spikes (not traded): {int(flags['spike_day'].sum())} ({int(flags['spikes'].sum())} bars); "
+        f"{int(flags['spikes_matched'].sum())} more spike bars were matched by the other index within ±1 min "
+        f"and kept as real moves",
         "",
         "Row checks (raw contracts → continuous):",
         "",

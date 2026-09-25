@@ -1,6 +1,6 @@
 # Data validation — dataset `real`
 
-Continuous contracts: roll rule `calendar`, adjustment `additive`. Tradeable trading dates: **3905 / 4199**.
+Continuous contracts: roll rule `calendar`, adjustment `additive`. Tradeable trading dates: **3994 / 4199**.
 
 Splices (proxy → micro):
 
@@ -14,7 +14,7 @@ Splices (proxy → micro):
 - Weekdays with no data: 56 (50 are known holidays; **6 unexplained**)
 - Short / holiday sessions (not traded): 196 (of which early close before 16:00 ET: 136)
 - Days with an intraday hole ≥ 60 min (not traded): 4
-- Days with suspect spikes (not traded): 88 (251 bars)
+- Days with suspect spikes (not traded): 8 (16 bars); 235 more spike bars were matched by the other index within ±1 min and kept as real moves
 
 Row checks (raw contracts → continuous):
 
@@ -176,7 +176,7 @@ Pair alignment (share of traded-instrument minutes that also have a partner bar;
 - Weekdays with no data: 56 (50 are known holidays; **6 unexplained**)
 - Short / holiday sessions (not traded): 171 (of which early close before 16:00 ET: 136)
 - Days with an intraday hole ≥ 60 min (not traded): 4
-- Days with suspect spikes (not traded): 56 (111 bars)
+- Days with suspect spikes (not traded): 0 (0 bars); 111 more spike bars were matched by the other index within ±1 min and kept as real moves
 
 Row checks (raw contracts → continuous):
 

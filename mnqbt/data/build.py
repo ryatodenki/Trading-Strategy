@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 def combined_day_flags(a: pd.DataFrame, b: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Per-date flags for the traded instrument; a date is tradeable only if BOTH series are clean."""
     tick = float(get(cfg, "instruments.tick_size"))
-    fa, fb = day_flags(a, cfg, tick), day_flags(b, cfg, tick)
+    fa, fb = day_flags(a, cfg, tick, partner=b), day_flags(b, cfg, tick, partner=a)
     skip_short = bool(get(cfg, "setup.skip_short_sessions"))
     skip_gap = bool(get(cfg, "setup.skip_gap_days"))
 

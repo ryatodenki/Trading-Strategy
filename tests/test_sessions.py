@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from mnqbt.data.sessions import annotate, session_end_times, trading_dates
 from mnqbt.data.validate import day_flags
@@ -97,3 +98,32 @@ def test_short_session_flagged(cfg):
     assert bool(f.loc["2024-01-15", "short"]) and bool(f.loc["2024-01-15", "early_close"])
     assert not bool(f.loc["2024-01-16", "short"])
     assert f.loc["2024-01-15", "holiday"] == "MLK Day"
+
+
+def _flat_day(spike_at=None, move_at=None, move_pts=10.0):
+    """Trading date 2024-03-05 of flat 1m bars (range 1 pt), optionally with a wick or a big bar."""
+    idx = pd.date_range(_utc("2024-03-04 18:00"), _utc("2024-03-05 16:59"), freq="1min").as_unit("ns")
+    df = pd.DataFrame({"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 1}, index=idx)
+    if spike_at:
+        df.loc[_utc(spike_at), "high"] = 140.0                # 40-pt wick that reverts: suspect tick
+    if move_at:
+        df.loc[_utc(move_at), "high"] = 100.5 + move_pts
+    return df
+
+
+@pytest.mark.parametrize("move_at, move_pts, real", [
+    (None, 0.0, False),                  # partner quiet: bad tick
+    ("2024-03-05 10:01", 10.0, True),    # partner moves within 1 minute: real move
+    ("2024-03-05 10:02", 10.0, False),   # partner moves 2 minutes later: no match
+    ("2024-03-05 10:00", 3.0, False),    # partner bar 4x its median range: below spike_partner_mult
+])
+def test_spike_day_only_without_matching_partner_move(cfg, move_at, move_pts, real):
+    a = _flat_day(spike_at="2024-03-05 10:00")
+    f = day_flags(a, cfg, 0.25, partner=_flat_day(move_at=move_at, move_pts=move_pts)).loc["2024-03-05"]
+    assert bool(f["spike_day"]) is not real
+    assert (f["spikes"], f["spikes_matched"]) == ((0, 1) if real else (1, 0))
+
+
+def test_spike_day_without_partner(cfg):
+    f = day_flags(_flat_day(spike_at="2024-03-05 10:00"), cfg, 0.25).loc["2024-03-05"]
+    assert bool(f["spike_day"]) and f["spikes"] == 1 and f["spikes_matched"] == 0

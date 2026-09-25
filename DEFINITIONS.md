@@ -107,7 +107,7 @@ For a **bearish** SMT:
 - **No trading on:**
   - holiday / half-day sessions;
   - days where either instrument has a data hole of 60+ minutes;
-  - days with a suspect bad tick.
+  - days with a suspect bad tick: a 1m wick over 15× the usual 1m range that reverts within the bar, with no matching move (5×+ its usual range) in the other index within ±1 minute. CPI/NFP releases and crash bars move both indices, so they are kept.
 - **News days** (off by default):
   - FOMC and NFP dates are in `config/news_days.csv`. FOMC dates are from the Fed's calendars; NFP dates come from BLS scheduling rules.
   - Add CPI or anything else to the CSV.

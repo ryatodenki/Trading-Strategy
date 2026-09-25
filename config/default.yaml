@@ -72,6 +72,7 @@ validation:
   gap_day_exclude_minutes: 60  # exclude a day from trading if it has a hole this long
   spike_mult: 15               # wick > 15x rolling median 1m range that reverts -> suspect tick
   spike_lookback: 240
+  spike_partner_mult: 5        # ...unless the other index has a bar >= 5x its own median range within ±1 min (a real move)
   min_pair_coverage: 0.95      # warn if MES has bars for < 95% of MNQ minutes
 
 # -----------------------------------------------------------------------------

@@ -102,7 +102,7 @@ validation report lists:
 - missing weekdays, explained by the built-in US holiday calendar;
 - short/holiday sessions;
 - intraday holes;
-- suspect spike bars;
+- suspect spike bars: a wick over 15× the usual 1m range that reverts within the bar, **and** no move of 5×+ its usual range in the other index within ±1 minute. A data release or crash moves MNQ and MES together; a bad tick shows up in one only. Spikes the other index matched are counted and kept;
 - duplicates and OHLC errors;
 - MNQ↔MES minute coverage and correlation per year;
 - every roll with its gap.
