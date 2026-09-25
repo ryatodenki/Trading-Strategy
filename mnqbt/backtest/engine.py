@@ -28,6 +28,9 @@ Market entry (no-FVG variant): next bar open + slippage; target = entry + R * ri
 No stop / no target (strategies/): ``stop`` / ``target`` NaN.  An order with a
 finite ``risk_unit`` (points) has its R measured in that unit instead of the
 stop distance (required when there is no stop).
+Trailing stop (optional ``trail_ns`` / ``trail_px``): each update moves the stop to its
+price from the first bar starting at or after its time, only if that time is after the
+fill bar started and only if it tightens the stop; a gap through it fills at the open.
 Costs: commission+fees per contract per side, both sides.  A position held
 across a contract roll (``Market.roll_ns``) pays a close and a reopen there:
 2 x commission and 2 x market slippage.
@@ -50,7 +53,7 @@ INT_MAX = np.iinfo(np.int64).max
 TRADE_COLUMNS = [
     "intent", "dir", "placed_ns", "fill_ns", "exit_ns", "entry", "stop", "target", "risk_pts", "exit_price", "exit_reason",
     "ambiguous_bar", "bars_held", "mfe_r", "mae_r", "gross_pts", "net_pts", "commission", "pnl_usd", "gross_usd",
-    "slippage_usd", "r_gross", "r_net", "fill_session", "rolls",
+    "slippage_usd", "r_gross", "r_net", "fill_session", "rolls", "stop_last",
 ]
 
 
@@ -120,11 +123,25 @@ def _first(mask: np.ndarray) -> int:
     return i if mask[i] else INT_MAX
 
 
+def stop_path(ts: np.ndarray, g0: int, g_end: int, d: int, stop: float, t_upd: np.ndarray, px_upd: np.ndarray) -> np.ndarray:
+    """Stop in force in each bar g0..g_end-1: ``stop``, moved to each update's price from the first bar
+    starting at or after the update time (updates timed after bar g0 started only), never loosened."""
+    m = max(g_end - g0, 1)
+    y = np.full(m, -np.inf)                       # d * price, so "tighter" is always "larger"
+    t_upd, px_upd = np.asarray(t_upd, np.int64), np.asarray(px_upd, float)
+    keep = t_upd > ts[g0]
+    k = np.searchsorted(ts[g0:g0 + m], t_upd[keep], side="left")
+    ok = k < m
+    np.maximum.at(y, k[ok], d * px_upd[keep][ok])
+    return d * np.maximum.accumulate(np.maximum(d * stop, y))
+
+
 def exit_scan(
     mk: Market, g0: int, g_flat: int, d: int, stop: float, target: float, st: EngineSettings,
-    limit_fill_bar: bool, resolver: Resolver | None = None,
+    limit_fill_bar: bool, resolver: Resolver | None = None, path: np.ndarray | None = None,
 ) -> tuple[int, str, float, bool]:
-    """Walk bars from the fill bar g0 until exit.  Returns (exit_bar, reason, raw_exit_price, ambiguous)."""
+    """Walk bars from the fill bar g0 until exit.  Returns (exit_bar, reason, raw_exit_price, ambiguous).
+    ``path``: stop in force in each bar from g0 (trailing stop); the fill bar always uses ``stop``."""
     h, l, c, o = mk.high, mk.low, mk.close, mk.open
     through = st.fill_mode == "through"
     g_flat = min(g_flat, len(mk.ts))
@@ -140,11 +157,12 @@ def exit_scan(
             return g0, "target", target, False
         start = g0 + 1
     H, L = h[start:g_flat], l[start:g_flat]
+    S = stop if path is None else path[start - g0:g_flat - g0]
     if d > 0:
-        fs = _first(L <= stop)
+        fs = _first(L <= S)
         ft = _first(H > target if through else H >= target)
     else:
-        fs = _first(H >= stop)
+        fs = _first(H >= S)
         ft = _first(L < target if through else L <= target)
     if fs == INT_MAX and ft == INT_MAX:
         if g_flat < len(mk.ts):
@@ -161,7 +179,8 @@ def exit_scan(
         take_stop = fs < ft
     if take_stop:
         g = start + fs
-        raw = min(o[g], stop) if d > 0 else max(o[g], stop)
+        sg = stop if path is None else path[g - g0]
+        raw = min(o[g], sg) if d > 0 else max(o[g], sg)
         if limit_fill_bar and g == g0:
             raw = stop
         return g, "stop", raw, ambiguous
@@ -226,7 +245,10 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
     unit = float(o_.get("risk_unit", np.nan))
     if np.isfinite(unit):
         risk = unit   # the order's own R unit (stopless strategies; patterns measure every trade in 10% of ATR)
-    gx, reason, raw_exit, amb = exit_scan(mk, g0, i_flat, d, stop, target, st, limit_bar, resolver)
+    path, tn = None, o_.get("trail_ns")
+    if isinstance(tn, (np.ndarray, list, tuple)) and len(tn):
+        path = stop_path(ts, g0, min(i_flat, n), d, stop, tn, o_["trail_px"])
+    gx, reason, raw_exit, amb = exit_scan(mk, g0, i_flat, d, stop, target, st, limit_bar, resolver, path)
     if reason == "stop":
         exit_px = raw_exit - d * st.slippage_ticks_stop * st.tick
     elif reason in ("flatten", "end_of_data"):
@@ -268,6 +290,7 @@ def run_order(mk: Market, st: EngineSettings, o_: dict, resolver: Resolver | Non
         "r_net": pnl_usd / risk_usd,
         "fill_session": mk.session[g0],
         "rolls": rolls,
+        "stop_last": stop if path is None else float(path[min(gx - g0, len(path) - 1)]),
     }
     return "filled", trade, int(ts[gx]) + NS_PER_MIN, int(ts[g0])
 

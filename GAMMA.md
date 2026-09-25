@@ -161,3 +161,12 @@ Each hypothesis has **two tests**. That makes **10 tests** in one Holm family.
 4. **Final test:** only for hypotheses that pass 1 and 2, and only when you say so. Each is run once, and the run is logged.
 
 If nothing passes explore, validate is not used.
+
+---
+
+### Implementation notes, made before any run (no rule above is changed)
+
+1. **G5 limit orders on positive-gamma days** follow the harness's standard fill rule: a working limit order is cancelled if price reaches the target before the order fills. The move happened without the trade.
+2. **Trailing stop timing (G5, negative gamma).** A swing is confirmed at the close of its 5-minute bar. The new stop applies from the next 1-minute bar. A bar that opens through the stop fills at its open, minus 1 tick.
+3. **Pooled G2, two levels swept by the same bar.** The orders are identical except for the level name. The first in the order Asia, London, prior day is taken, and the others are skipped as "position already open".
+4. **Fixed family size.** A test that cannot be computed (no trades) stays in the Holm family as p = 1, so the family is always the 10 tests declared above.

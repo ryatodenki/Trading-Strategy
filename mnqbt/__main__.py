@@ -209,6 +209,40 @@ def cmd_patterns(args, cfg):
     print(f"report: {d / (args.stage + '.md')}")
 
 
+def cmd_gex_download(args, cfg):
+    """Fetch SqueezeMetrics' daily GEX CSV once (GAMMA.md).  Only run after the source was approved."""
+    from mnqbt.data.gex import GEX_URL, download_gex, load_gex
+
+    p = download_gex(cfg, force=args.force)
+    g = load_gex(cfg)
+    print(f"saved {GEX_URL} -> {p} ({p.stat().st_size:,} bytes, {len(g):,} dates, {g.index.min().date()} .. {g.index.max().date()})")
+
+
+def cmd_gamma(args, cfg):
+    """GAMMA.md study, one stage at a time; every test is logged in the pattern-search log."""
+    from mnqbt.reports import report as rp
+    from mnqbt.strategies.explore import log_report, out_dir
+    from mnqbt.strategies.gamma_run import gamma_dir, run_stage, stage_report
+
+    res = run_stage(cfg, args.dataset, args.stage, reps=args.reps, unlock_final=args.unlock_final)
+    d = gamma_dir(cfg, args.dataset)
+    rp.write(d / f"{args.stage}.md", stage_report(res))
+    rp.write(out_dir(cfg, args.dataset) / "README.md", log_report(cfg, args.dataset))
+    trade_dir = scratch_dir(cfg) / args.dataset / "gamma" / args.stage   # git-ignored per-trade files
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    for h, t in res.trades.items():
+        t.drop(columns=[c for c in t.columns if c.endswith("_time") or c in ("trail_ns", "trail_px")], errors="ignore").to_parquet(
+            trade_dir / f"{h}.parquet")
+    if res.note:
+        print(res.note)
+    for r in res.rows:
+        eff = r.get("avg_r_net") if r["kind"] == "main" else r.get("delta")
+        print(f"{r['hypothesis']:3s} {r['kind']:8s} {r['instrument']} {r['split']:8s} trades {r['trades']:6d}  "
+              f"effect {(eff if eff is not None else float('nan')):+.3f}  p {r['p']:.4f}  adj {r.get('p_adj', float('nan')):.4f}  "
+              f"{'PASS' if r['passed'] else 'fail'}")
+    print(f"report: {d / (args.stage + '.md')}")
+
+
 def cmd_suite(args, cfg):
     from mnqbt.backtest.research import load_features, period_bounds, run_suite
     from mnqbt.reports import report as rp
@@ -407,6 +441,17 @@ def main(argv=None):
     p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
     p.add_argument("--unlock-final", action="store_true", help="required for --stage final; only when told to")
     p.set_defaults(fn=cmd_patterns)
+
+    p = sub.add_parser("gex-download", help="fetch SqueezeMetrics' free daily GEX CSV once (GAMMA.md)")
+    p.add_argument("--force", action="store_true", help="fetch again even if the file exists")
+    p.set_defaults(fn=cmd_gex_download)
+
+    p = sub.add_parser("gamma", help="GAMMA.md gamma-regime study: explore -> validate -> mes -> final")
+    p.add_argument("--dataset", default="real")
+    p.add_argument("--stage", choices=["explore", "validate", "mes", "final"], required=True)
+    p.add_argument("--reps", type=int, default=1000, help="random-entry benchmark runs (explore passes only)")
+    p.add_argument("--unlock-final", action="store_true", help="allow the final test (only when told to)")
+    p.set_defaults(fn=cmd_gamma)
 
     p = sub.add_parser("strategies", help="STRATEGIES.md candidates, development period only")
     p.add_argument("--dataset", default="real")

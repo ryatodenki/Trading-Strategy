@@ -165,9 +165,17 @@ def append_log(cfg: dict, dataset: str, rows: list[dict]) -> None:
             f.write(json.dumps({"time_utc": stamp, "commit": commit, **clean}) + "\n")
 
 
-def passed(log: pd.DataFrame, stage: str) -> list[str]:
-    """Hypotheses that passed the latest run of ``stage``."""
-    if log.empty or not (log["stage"] == stage).any():
+def study_of(log: pd.DataFrame) -> pd.Series:
+    """Which study each log row belongs to (rows written before the gamma study have none: patterns)."""
+    return log["study"].fillna("patterns") if "study" in log else pd.Series("patterns", index=log.index)
+
+
+def passed(log: pd.DataFrame, stage: str, study: str = "patterns") -> list[str]:
+    """Hypotheses that passed the latest run of ``stage`` of ``study``."""
+    if log.empty:
+        return []
+    log = log[study_of(log) == study]
+    if not (log["stage"] == stage).any():
         return []
     last = log[log["stage"] == stage]["time_utc"].max()
     x = log[(log["stage"] == stage) & (log["time_utc"] == last)]
@@ -209,7 +217,7 @@ def _test_split(cfg: dict, w: World, ids: list[str], family: int, stage: str, re
     srs = np.array([r["sr_trade"] for r in rows if r["kind"] == "rule" and r.get("sr_trade") is not None], float)
     for r, a in zip(rows, adj):
         effect = r["avg_r_net"] if r["kind"] == "rule" else r["delta"]
-        r.update(stage=stage, split=w.split, instrument=w.instrument, start=str(w.start.date()), end=str(w.end.date()),
+        r.update(study="patterns", stage=stage, split=w.split, instrument=w.instrument, start=str(w.start.date()), end=str(w.end.date()),
                  p_adj=float(a), adjustment=f"Holm across {family}", passed=bool(effect is not None and effect > 0 and a < ALPHA))
         if r["kind"] == "rule" and len(srs) >= 2 and stage == "explore":
             r["deflated_sharpe"] = deflated_sharpe(trades[r["hypothesis"]]["r_net"].to_numpy(float), srs)
@@ -226,12 +234,12 @@ def run_stage(cfg: dict, dataset: str, stage: str, reps: int = 1000, unlock_fina
         ids = [h.id for h in HYPOTHESES]
         res = _test_split(cfg, load_world(cfg, dataset, "MNQ", "explore"), ids, len(ids), stage, reps, bench=True)
     elif stage == "validate":
-        ids = passed(log, "explore")
+        ids = passed(log, "explore", "patterns")
         if not ids:
             return StageResult(stage, note="Nothing passed explore, so validate was not used.")
         res = _test_split(cfg, load_world(cfg, dataset, "MNQ", "validate"), ids, len(ids), stage, reps, bench=False)
     elif stage == "mes":
-        ids = sorted(set(passed(log, "explore")) & set(passed(log, "validate")), key=lambda h: int(h[1:]))
+        ids = sorted(set(passed(log, "explore", "patterns")) & set(passed(log, "validate", "patterns")), key=lambda h: int(h[1:]))
         if not ids:
             return StageResult(stage, note="Nothing passed both explore and validate, so there is nothing to check on MES.")
         res = StageResult(stage)
@@ -248,7 +256,7 @@ def run_stage(cfg: dict, dataset: str, stage: str, reps: int = 1000, unlock_fina
     elif stage == "final":
         if not unlock_final:
             raise SystemExit("the final test is locked: pass unlock_final / --unlock-final only when told to")
-        ids = sorted(set(passed(log, "explore")) & set(passed(log, "validate")), key=lambda h: int(h[1:]))
+        ids = sorted(set(passed(log, "explore", "patterns")) & set(passed(log, "validate", "patterns")), key=lambda h: int(h[1:]))
         if not ids:
             return StageResult(stage, note="Nothing passed explore and validate, so the final test stays unused.")
         res = _test_split(cfg, load_world(cfg, dataset, "MNQ", "final"), ids, len(ids), stage, reps, bench=False)
@@ -310,18 +318,22 @@ EARLIER = """## Earlier tests on these dates (other rules, same data)
 
 def log_report(cfg: dict, dataset: str) -> str:
     log = read_log(cfg, dataset)
-    L = ["# Pattern search — every test run", "", "Generated from `test_log.jsonl`, which gets one line per test, appended and "
-         "never edited. Hypotheses and rules: [PATTERNS.md](../../../PATTERNS.md).", ""]
+    L = ["# Pattern search and gamma study — every test run", "", "Generated from `test_log.jsonl`, which gets one line per test, "
+         "appended and never edited. Hypotheses and rules: [PATTERNS.md](../../../PATTERNS.md) (H1–H9) and "
+         "[GAMMA.md](../../../GAMMA.md) (G1–G5; each has a main test and a gamma contrast). \"passes\" is the hypothesis's "
+         "verdict at that stage.", ""]
     if log.empty:
         L += ["No tests run yet.", ""]
     else:
-        L += ["| time (UTC) | commit | stage | instrument | split | # | hypothesis | trades | effect (avg R or Δ) | 95% CI | p | p adj. | passes |",
-              "|---|---|---|---|---|---|---|---:|---:|---|---:|---:|---|"]
+        log = log.assign(study=study_of(log))
+        L += ["| time (UTC) | commit | study | stage | instrument | split | # | test | hypothesis | trades | effect (avg R or Δ) | "
+              "95% CI | p | p adj. | passes |", "|---|---|---|---|---|---|---|---|---|---:|---:|---|---:|---:|---|"]
         for r in log.to_dict("records"):
-            eff = r.get("avg_r_net") if r.get("kind") == "rule" else r.get("delta")
+            eff = r.get("avg_r_net") if r.get("kind") in ("rule", "main") else r.get("delta")
             pa = r.get("p_combined") if r.get("stage") == "mes" else r.get("p_adj")
-            L.append(f"| {r['time_utc']} | {r['commit']} | {r['stage']} | {r['instrument']} | {r['split']} | {r['hypothesis']} | "
-                     f"{r['name']} | {r['trades']:,} | {_f(eff)} | [{_f(r.get('ci_low'))}, {_f(r.get('ci_high'))}] | {_p(r.get('p'))} | "
-                     f"{_p(pa)} | {'yes' if r['passed'] else 'no'} |")
+            test = {"rule": "rule", "filter": "filter", "main": "main", "contrast": "contrast"}.get(r.get("kind"), "")
+            L.append(f"| {r['time_utc']} | {r['commit']} | {r['study']} | {r['stage']} | {r['instrument']} | {r['split']} | "
+                     f"{r['hypothesis']} | {test} | {r['name']} | {r['trades']:,} | {_f(eff)} | [{_f(r.get('ci_low'))}, "
+                     f"{_f(r.get('ci_high'))}] | {_p(r.get('p'))} | {_p(pa)} | {'yes' if r['passed'] else 'no'} |")
         L.append("")
     return "\n".join(L + [EARLIER])

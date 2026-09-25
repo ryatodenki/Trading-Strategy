@@ -17,6 +17,7 @@ VWAP and value area.
 | Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; not run on real data (nothing to tune yet); **holdout untouched** |
 | Published-strategy candidates ([STRATEGIES.md](STRATEGIES.md)) | **15 declared strategies run once on 2010–2022: none qualifies as a finalist**; holdout untouched → [results/real/strategies_dev.md](results/real/strategies_dev.md) |
 | Pattern search ([PATTERNS.md](PATTERNS.md)): explore / validate / final split | **9 hypotheses on explore (2010-06 → 2018-08): nothing passed**; validate and final test unused → [results/real/patterns/](results/real/patterns/README.md) |
+| Gamma regime study ([GAMMA.md](GAMMA.md)): SqueezeMetrics GEX as a regime switch, same splits | pre-registered, built and tested on synthetic data; **not run: the GEX download awaits your approval** |
 
 Everything under `results/synthetic/` comes from a **random walk**. It proves the
 pipeline runs and has no lookahead: a random walk shows no edge, and it
@@ -124,6 +125,8 @@ python -m mnqbt suite --dataset real                              # Step 3 (deve
 python -m mnqbt walkforward --dataset real                        # Step 4 (development period only)
 python -m mnqbt holdout --dataset real --variant baseline --note "final"   # Step 4: ONE look at recent data
 python -m mnqbt strategies --dataset real                         # STRATEGIES.md candidates, development period only
+python -m mnqbt gex-download                                     # SqueezeMetrics daily GEX, once, into datastore/gex/ (git-ignored)
+python -m mnqbt gamma --stage explore                            # GAMMA.md study; then validate / mes; final needs --unlock-final
 ```
 
 Variant definitions live in [config/variants.yaml](config/variants.yaml). Every
@@ -165,11 +168,11 @@ The first version of the test only caught one of the first three. That's why it'
 
 ```
 config/            default.yaml (all parameters), variants.yaml (Step 3), news_days.csv
-mnqbt/data/        databento_fetch, importers, continuous (rolls), sessions, calendar, validate, build, synthetic
+mnqbt/data/        databento_fetch, importers, continuous (rolls), sessions, calendar, validate, build, synthetic, gex (gamma)
 mnqbt/rules/       bars, swings, structure, levels, fvg, smt, mood, vwap, profile, news, features, setups
 mnqbt/backtest/    engine (fills/costs), research (variants, grid, walk-forward, holdout), random_bench
 mnqbt/reports/     metrics (stats, bootstrap CIs, multiple-testing corrections, breakdowns), charts, report (markdown)
-mnqbt/strategies/  published-research candidates (STRATEGIES.md): rules, random-entry benchmark, runner
+mnqbt/strategies/  published-research candidates (STRATEGIES.md): rules, random-entry benchmark, runner; pattern search (PATTERNS.md) and gamma study (GAMMA.md)
 tests/             FVG, swings/structure, sessions/levels, SMT, fills, rolls, profile/VWAP, no-lookahead
 results/           committed reports (synthetic demo now; real data later)
 ```

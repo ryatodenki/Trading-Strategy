@@ -70,7 +70,8 @@ def timed_r_net(mk: Market, st: EngineSettings, placed: np.ndarray, flatten: np.
 
 
 def random_benchmark(ctx: Ctx, mk: Market, st: EngineSettings, trades: pd.DataFrame, start, end, reps: int,
-                     seed: int = 0) -> dict:
+                     seed: int = 0, allowed_days: pd.DatetimeIndex | None = None) -> dict:
+    """``allowed_days``: draw entry days only from these (e.g. days of the same gamma regime)."""
     if trades.empty:
         return {"dist": np.array([]), "p_value": np.nan, "strategy": np.nan, "bench_mean": np.nan, "bench_p05": np.nan,
                 "bench_p95": np.nan}
@@ -78,6 +79,8 @@ def random_benchmark(ctx: Ctx, mk: Market, st: EngineSettings, trades: pd.DataFr
     days = ctx.trading_days()
     days = days[(days >= pd.Timestamp(start)) & (days <= pd.Timestamp(end))]
     eligible = days[ctx.can_enter(days)]
+    if allowed_days is not None:
+        eligible = eligible[eligible.isin(pd.DatetimeIndex(allowed_days))]
     pos = np.searchsorted(ctx.days.values, eligible.values)
     last_pos = np.searchsorted(ctx.days.values, days[-1].to_datetime64())
     atr_e = ctx.atr_on(eligible)
