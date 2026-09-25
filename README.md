@@ -10,11 +10,11 @@ VWAP and value area.
 
 | Stage | Status |
 |---|---|
-| Step 0 — data pipeline (download / import, rolls, sessions, validation) | built and tested; **waiting for real data** |
+| Step 0 — data pipeline (download / import, rolls, sessions, validation) | done: Databento 2010 → 2026-09 → [results/real/data_validation.md](results/real/data_validation.md) |
 | Step 1 — rule definitions + example charts | built; **definitions awaiting your review** → [DEFINITIONS.md](DEFINITIONS.md) |
 | Step 2 — backtest engine (fills, costs, no lookahead) | built and tested |
-| Step 3 — baseline, add-one, remove-one variants | built; demo run on synthetic data only |
-| Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; demo run on synthetic data only |
+| Step 3 — baseline, add-one, remove-one variants | **run on real data (2010–2022): every variant loses about 0.15–0.2R per trade after costs; the baseline does no better than random entries (p = 0.73)** → [results/real/step3_variants.md](results/real/step3_variants.md) |
+| Step 4 — tuning grid, walk-forward, one-shot holdout, random benchmark, CIs | built; not run on real data (nothing to tune yet); **holdout untouched** |
 
 Everything under `results/synthetic/` comes from a **random walk**. It proves the
 pipeline runs and has no lookahead: a random walk shows no edge, and it
