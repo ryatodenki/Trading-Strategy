@@ -60,9 +60,9 @@ The older **near** mode (`rules.levels.mode: near`) is still available: the swin
 ## 3. Fair value gap (entry zone)
 
 - **Definition.** Three consecutive candles on the 5-minute chart (15-minute as a variant), in the same trading day with no missing candle between.
-  - **Bullish FVG:** candle 3's low is above candle 1's high. The zone runs from candle 1's high up to candle 3's low.
-  - **Bearish FVG:** candle 3's high is below candle 1's low.
-- **Minimum size.** max(1 pt, 0.01 × ATR), about 3.5 points at 2025 prices.
+  - **Bullish FVG:** candle 3's low is above candle 1's high, and **all three candles close up** (close above open). The zone runs from candle 1's high up to candle 3's low.
+  - **Bearish FVG:** candle 3's high is below candle 1's low, and **all three candles close down**.
+- **Minimum size.** max(1 pt, 0.03 × ATR): medium and big gaps only, about 8–11 points at 2024–2025 prices. That keeps roughly the largest third of three-candle gaps.
 - **Known** when candle 3 closes. **Valid** for 12 candles after that (1 hour on 5m).
 
 ## 4. SMT divergence (a confirmation, not a requirement)

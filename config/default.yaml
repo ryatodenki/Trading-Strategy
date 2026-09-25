@@ -132,7 +132,8 @@ rules:
 
   fvg:
     timeframe: 5min            # 5min | 15min
-    min_size: {points: 1.0, atr_frac: 0.01}
+    min_size: {points: 1.0, atr_frac: 0.03}   # medium and big gaps only (~the largest third)
+    same_direction: true       # all three candles close the gap's way (3 up candles / 3 down candles)
     max_age_bars: 12           # FVG usable for this many bars of its timeframe
 
   smt:

@@ -89,7 +89,7 @@ class Features:
         def make():
             bars = self.bars("a", f["timeframe"])
             min_size = resolve_dist(f["min_size"], self.atr_for(cfg, bars))
-            return detect_fvgs(bars, f["timeframe"], min_size, int(f["max_age_bars"]))
+            return detect_fvgs(bars, f["timeframe"], min_size, int(f["max_age_bars"]), bool(f.get("same_direction", False)))
 
         return self._cached("fvgs", cfg, ["rules.fvg", "rules.atr_days"], make)
 
